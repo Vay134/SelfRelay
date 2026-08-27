@@ -7,7 +7,7 @@ import hmac
 import secrets
 import threading
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Protocol, cast
@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 from .adapters import AuthGateway, InvalidOtpError
 from .repositories.accounts import AccountRepository
 from .repositories.models import AccountRecord
+from .repositories.rate_limits import PersistentRateLimiter
+from .security import check_optional_origin
 from .sessions import hash_secret, new_opaque_token
 
 OTP_WINDOW = timedelta(minutes=10)
@@ -183,6 +185,9 @@ class RateLimiter:
                 return False
             self._buckets[bucket_key] = (expires_at, request_count + 1)
             return True
+
+
+RateLimiterPort = RateLimiter | PersistentRateLimiter
 
 
 class AccountStore(Protocol):
@@ -372,7 +377,7 @@ class OtpBootstrapService:
         account_store: AccountStore,
         *,
         bootstrap_store: BootstrapStateStore | None = None,
-        rate_limiter: RateLimiter | None = None,
+        rate_limiter: RateLimiterPort | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.gateway = gateway
@@ -387,19 +392,28 @@ class OtpBootstrapService:
             raise ValueError("authentication timestamps must be timezone-aware")
         return current.astimezone(UTC)
 
-    def _allow(self, email_normalized: str, network_identifier: str, *, verify: bool) -> bool:
+    async def _allow(
+        self,
+        email_normalized: str,
+        network_identifier: str,
+        *,
+        verify: bool,
+    ) -> bool:
         email_limit = OTP_VERIFY_EMAIL_LIMIT if verify else OTP_START_EMAIL_LIMIT
         network_limit = OTP_VERIFY_NETWORK_LIMIT if verify else OTP_START_NETWORK_LIMIT
         email_scope = "otp:verify:email" if verify else "otp:start:email"
         network_scope = "otp:verify:network" if verify else "otp:start:network"
         current = self._now()
-        return self.rate_limiter.allow_many(
+        result = self.rate_limiter.allow_many(
             (
                 (email_scope, email_normalized, email_limit, OTP_WINDOW),
                 (network_scope, network_identifier, network_limit, OTP_WINDOW),
             ),
             now=current,
         )
+        if isinstance(result, bool):
+            return result
+        return await cast(Awaitable[bool], result)
 
     async def start_otp(
         self,
@@ -411,7 +425,7 @@ class OtpBootstrapService:
         """Normalize and rate-limit an OTP request before invoking the provider."""
 
         normalized = normalize_email(email)
-        if not self._allow(normalized, network_identifier, verify=False):
+        if not await self._allow(normalized, network_identifier, verify=False):
             raise OtpRateLimitedError
         await (gateway or self.gateway).start_otp(normalized)
         return normalized
@@ -429,7 +443,7 @@ class OtpBootstrapService:
         normalized = normalize_email(email)
         if not isinstance(otp, str) or not 1 <= len(otp.strip()) <= 64:
             raise OtpInvalidError
-        if not self._allow(normalized, network_identifier, verify=True):
+        if not await self._allow(normalized, network_identifier, verify=True):
             raise OtpRateLimitedError
         try:
             identity = await (gateway or self.gateway).verify_otp(normalized, otp.strip())
@@ -480,6 +494,9 @@ def _service_from_request(request: Request) -> OtpBootstrapService:
     service = getattr(request.app.state, "otp_service", None)
     if isinstance(service, OtpBootstrapService):
         return service
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None and getattr(settings, "app_env", None) != "test":
+        raise RuntimeError("production authentication service is not configured")
     gateway = getattr(request.app.state, "auth_gateway", None)
     if gateway is None:
         raise RuntimeError("authentication service is not configured")
@@ -512,6 +529,7 @@ async def start_otp(
 ) -> dict[str, str]:
     """Start a generic email OTP flow without revealing account existence."""
 
+    check_optional_origin(request)
     try:
         await service.start_otp(payload.email, _network_identifier(request), gateway=gateway)
     except OtpRateLimitedError as error:
@@ -536,6 +554,7 @@ async def verify_otp(
 ) -> dict[str, object]:
     """Verify an OTP and return only short-lived pre-device bootstrap state."""
 
+    check_optional_origin(request)
     try:
         bootstrap = await service.verify_otp(
             payload.email,

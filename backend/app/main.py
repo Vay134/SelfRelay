@@ -4,11 +4,26 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.adapters import create_auth_gateway
-from app.auth import InMemoryAccountStore, OtpBootstrapService, RepositoryAccountStore, router
+from app.auth import (
+    InMemoryAccountStore,
+    OtpBootstrapService,
+    RateLimiter,
+    RepositoryAccountStore,
+    router,
+)
 from app.config import load_settings
 from app.database import Database
 from app.logging import configure_logging
-from app.repositories import AccountRepository
+from app.repositories import (
+    AccountRepository,
+    PersistentRateLimiter,
+    RateLimitBucketRepository,
+    SessionRepository,
+)
+from app.security import ConfiguredCORSMiddleware
+from app.session_api import SessionAuthenticator, SessionIssuer
+from app.session_api import router as session_router
+from app.sessions import InMemorySessionRepository, SessionService
 
 configure_logging()
 
@@ -27,9 +42,30 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if settings.app_env == "test"
         else RepositoryAccountStore(AccountRepository(database))
     )
-    auth_service = OtpBootstrapService(auth_gateway, account_store)
+    rate_limiter = (
+        RateLimiter(secret=b"test-rate-limit-secret")
+        if settings.app_env == "test"
+        else PersistentRateLimiter(
+            RateLimitBucketRepository(database),
+            settings.rate_limit_secret.encode("utf-8"),
+        )
+    )
+    auth_service = OtpBootstrapService(
+        auth_gateway,
+        account_store,
+        rate_limiter=rate_limiter,
+    )
+    session_repository = (
+        InMemorySessionRepository() if settings.app_env == "test" else SessionRepository(database)
+    )
+    session_service = SessionService(session_repository)
     application.state.otp_service = auth_service
     application.state.auth_service = auth_service
+    application.state.rate_limiter = rate_limiter
+    application.state.session_repository = session_repository
+    application.state.session_service = session_service
+    application.state.session_authenticator = SessionAuthenticator(session_repository)
+    application.state.session_issuer = SessionIssuer(session_service)
     try:
         yield
     finally:
@@ -42,7 +78,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(ConfiguredCORSMiddleware)
+
 app.include_router(router)
+app.include_router(session_router)
 
 
 @app.get("/health", tags=["system"])

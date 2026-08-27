@@ -17,6 +17,7 @@ _DEFAULT_APP_ENV: Final[AppEnvironment] = "development"
 _DEFAULT_LOG_LEVEL: Final[LogLevel] = "INFO"
 _DEFAULT_AUTH_ADAPTER: Final[AuthAdapter] = "fake"
 _DEFAULT_TURN_ADAPTER: Final[TurnAdapter] = "fake"
+_DEFAULT_RATE_LIMIT_SECRET: Final[str] = "local-development-rate-limit-secret"
 
 _APP_ENVIRONMENTS: Final[frozenset[str]] = frozenset({"development", "test", "production"})
 _LOG_LEVELS: Final[frozenset[str]] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -105,6 +106,7 @@ class Settings:
     log_level: LogLevel
     auth_adapter: AuthAdapter
     turn_adapter: TurnAdapter
+    rate_limit_secret: str = _DEFAULT_RATE_LIMIT_SECRET
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
@@ -138,6 +140,7 @@ class Settings:
             _TURN_ADAPTERS,
             lower=True,
         )
+        rate_limit_secret = _value(source, "RATE_LIMIT_SECRET", _DEFAULT_RATE_LIMIT_SECRET)
         if app_env == "production" and (auth_adapter == "fake" or turn_adapter == "fake"):
             raise ConfigurationError("fake adapters are not allowed when APP_ENV is production")
         return cls(
@@ -148,6 +151,7 @@ class Settings:
             log_level=cast(LogLevel, log_level),
             auth_adapter=cast(AuthAdapter, auth_adapter),
             turn_adapter=cast(TurnAdapter, turn_adapter),
+            rate_limit_secret=rate_limit_secret,
         )
 
 

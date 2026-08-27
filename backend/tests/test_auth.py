@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -42,7 +43,7 @@ class FakeDatabase:
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     settings = load_settings(_environment())
     monkeypatch.setattr(main, "load_settings", lambda: settings)
     monkeypatch.setattr(main, "Database", FakeDatabase)

@@ -79,6 +79,48 @@ class SessionRepository:
         row = first_row(rows)
         return None if row is None else session_from_row(row)
 
+    async def find_by_token_hash(self, token_hash: bytes) -> SessionRecord | None:
+        """Return a usable session after validating account and device state.
+
+        The cookie does not contain an account identifier, so this lookup is
+        intentionally keyed only by the SHA-256 token digest.  The joins keep
+        a revoked device, deleted account, or stale account epoch from
+        authenticating even when its session row still exists.
+        """
+
+        rows = await self._database.fetch(
+            """SELECT
+                session.id,
+                session.user_id,
+                session.device_id,
+                session.token_hash,
+                session.csrf_hash,
+                session.epoch,
+                session.created_at,
+                session.last_seen_at,
+                session.idle_expires_at,
+                session.absolute_expires_at,
+                session.revoked_at,
+                session.revocation_reason
+            FROM private.app_sessions AS session
+            JOIN private.app_users AS account
+              ON account.id = session.user_id
+            JOIN private.devices AS device
+              ON device.user_id = session.user_id
+             AND device.id = session.device_id
+            WHERE session.token_hash = $1
+              AND session.revoked_at IS NULL
+              AND session.idle_expires_at > CURRENT_TIMESTAMP
+              AND session.absolute_expires_at > CURRENT_TIMESTAMP
+              AND account.deleted_at IS NULL
+              AND account.device_epoch = session.epoch
+              AND device.status = 'active'
+              AND device.epoch = session.epoch""",
+            token_hash,
+        )
+        row = first_row(rows)
+        return None if row is None else session_from_row(row)
+
     async def list_for_account(self, account_id: UUID) -> list[SessionRecord]:
         """Return all sessions belonging to one account, newest first."""
 
@@ -143,11 +185,73 @@ class SessionRepository:
 
         rows = await self._database.fetch(
             f"""UPDATE private.app_sessions
-            SET last_seen_at = CURRENT_TIMESTAMP
-            WHERE user_id = $1 AND id = $2 AND revoked_at IS NULL
+            SET last_seen_at = CURRENT_TIMESTAMP,
+                idle_expires_at = LEAST(
+                    CURRENT_TIMESTAMP + interval '30 days',
+                    absolute_expires_at
+                )
+            WHERE user_id = $1
+              AND id = $2
+              AND revoked_at IS NULL
+              AND idle_expires_at > CURRENT_TIMESTAMP
+              AND absolute_expires_at > CURRENT_TIMESTAMP
+              AND EXISTS (
+                  SELECT 1
+                  FROM private.app_users AS account
+                  WHERE account.id = private.app_sessions.user_id
+                    AND account.deleted_at IS NULL
+                    AND account.device_epoch = private.app_sessions.epoch
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM private.devices AS device
+                  WHERE device.user_id = private.app_sessions.user_id
+                    AND device.id = private.app_sessions.device_id
+                    AND device.status = 'active'
+                    AND device.epoch = private.app_sessions.epoch
+              )
             RETURNING {_SESSION_COLUMNS}""",
             account_id,
             session_id,
+        )
+        row = first_row(rows)
+        return None if row is None else session_from_row(row)
+
+    async def replace_csrf_hash(
+        self,
+        account_id: UUID,
+        session_id: UUID,
+        csrf_hash: bytes,
+    ) -> SessionRecord | None:
+        """Replace a session's CSRF digest without returning the raw value."""
+
+        rows = await self._database.fetch(
+            f"""UPDATE private.app_sessions
+            SET csrf_hash = $3
+            WHERE user_id = $1
+              AND id = $2
+              AND revoked_at IS NULL
+              AND idle_expires_at > CURRENT_TIMESTAMP
+              AND absolute_expires_at > CURRENT_TIMESTAMP
+              AND EXISTS (
+                  SELECT 1
+                  FROM private.app_users AS account
+                  WHERE account.id = private.app_sessions.user_id
+                    AND account.deleted_at IS NULL
+                    AND account.device_epoch = private.app_sessions.epoch
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM private.devices AS device
+                  WHERE device.user_id = private.app_sessions.user_id
+                    AND device.id = private.app_sessions.device_id
+                    AND device.status = 'active'
+                    AND device.epoch = private.app_sessions.epoch
+              )
+            RETURNING {_SESSION_COLUMNS}""",
+            account_id,
+            session_id,
+            csrf_hash,
         )
         row = first_row(rows)
         return None if row is None else session_from_row(row)

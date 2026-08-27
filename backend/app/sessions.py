@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
-from dataclasses import dataclass
+import threading
+from collections.abc import Awaitable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from .repositories.models import SessionRecord
@@ -234,6 +236,168 @@ class SessionService:
         """Revoke one account-owned session."""
 
         return await self._repository.revoke(account_id, session_id, reason)
+
+    async def reissue_csrf(
+        self,
+        account_id: UUID,
+        session_id: UUID,
+    ) -> tuple[str, SessionRecord]:
+        """Rotate the CSRF secret for an already-authenticated session."""
+
+        replacer = getattr(self._repository, "replace_csrf_hash", None)
+        if not callable(replacer):
+            raise RuntimeError("session repository cannot rotate CSRF values")
+        csrf_secret = generate_csrf_secret()
+        replacement = replacer(account_id, session_id, hash_csrf_secret(csrf_secret))
+        updated = await cast(Awaitable[SessionRecord | None], replacement)
+        if updated is None:
+            raise ValueError("cannot rotate CSRF for an inactive session")
+        return csrf_secret, updated
+
+
+class InMemorySessionRepository:
+    """Explicit test-only session store used without a database connection."""
+
+    def __init__(self) -> None:
+        self._records: dict[UUID, SessionRecord] = {}
+        self._by_token_hash: dict[bytes, UUID] = {}
+        self._lock = threading.Lock()
+
+    async def create(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        token_hash: bytes,
+        csrf_hash: bytes,
+        epoch: int,
+        idle_expires_at: datetime,
+        absolute_expires_at: datetime,
+    ) -> SessionRecord:
+        created_at = datetime.now(UTC)
+        record = SessionRecord(
+            id=UUID(bytes=secrets.token_bytes(16)),
+            user_id=account_id,
+            device_id=device_id,
+            token_hash=bytes(token_hash),
+            csrf_hash=bytes(csrf_hash),
+            epoch=epoch,
+            created_at=created_at,
+            last_seen_at=created_at,
+            idle_expires_at=idle_expires_at,
+            absolute_expires_at=absolute_expires_at,
+            revoked_at=None,
+            revocation_reason=None,
+        )
+        with self._lock:
+            self._records[record.id] = record
+            self._by_token_hash[record.token_hash] = record.id
+        return record
+
+    async def find_by_token_hash(self, token_hash: bytes) -> SessionRecord | None:
+        current = datetime.now(UTC)
+        with self._lock:
+            record_id = self._by_token_hash.get(bytes(token_hash))
+            record = None if record_id is None else self._records.get(record_id)
+            if record is None or not self._is_usable(record, current):
+                return None
+            return record
+
+    async def get_by_token_hash(
+        self,
+        account_id: UUID,
+        token_hash: bytes,
+    ) -> SessionRecord | None:
+        record = await self.find_by_token_hash(token_hash)
+        return record if record is not None and record.user_id == account_id else None
+
+    async def list_for_account(self, account_id: UUID) -> list[SessionRecord]:
+        with self._lock:
+            records = [record for record in self._records.values() if record.user_id == account_id]
+        return sorted(records, key=lambda record: record.created_at, reverse=True)
+
+    async def touch_last_seen(
+        self,
+        account_id: UUID,
+        session_id: UUID,
+    ) -> SessionRecord | None:
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(session_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or not self._is_usable(record, current)
+            ):
+                return None
+            updated = self._replace(
+                record,
+                last_seen_at=current,
+                idle_expires_at=min(current + SESSION_IDLE_LIFETIME, record.absolute_expires_at),
+            )
+            self._records[session_id] = updated
+            return updated
+
+    async def replace_csrf_hash(
+        self,
+        account_id: UUID,
+        session_id: UUID,
+        csrf_hash: bytes,
+    ) -> SessionRecord | None:
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(session_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or not self._is_usable(record, current)
+            ):
+                return None
+            updated = self._replace(record, csrf_hash=bytes(csrf_hash))
+            self._records[session_id] = updated
+            return updated
+
+    async def revoke(
+        self,
+        account_id: UUID,
+        session_id: UUID,
+        reason: str = "logout",
+    ) -> SessionRecord | None:
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(session_id)
+            if record is None or record.user_id != account_id or record.revoked_at is not None:
+                return None
+            updated = self._replace(
+                record,
+                revoked_at=current,
+                revocation_reason=reason,
+            )
+            self._records[session_id] = updated
+            return updated
+
+    async def revoke_by_token_hash(
+        self,
+        account_id: UUID,
+        token_hash: bytes,
+        reason: str = "logout",
+    ) -> SessionRecord | None:
+        record = await self.get_by_token_hash(account_id, token_hash)
+        if record is None:
+            return None
+        return await self.revoke(account_id, record.id, reason)
+
+    @staticmethod
+    def _is_usable(record: SessionRecord, current: datetime) -> bool:
+        current = current.astimezone(UTC)
+        return (
+            record.revoked_at is None
+            and record.idle_expires_at > current
+            and record.absolute_expires_at > current
+        )
+
+    @staticmethod
+    def _replace(record: SessionRecord, **changes: object) -> SessionRecord:
+        return replace(record, **changes)  # type: ignore[arg-type]
 
 
 async def create_session(
