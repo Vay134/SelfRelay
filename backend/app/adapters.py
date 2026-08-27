@@ -28,6 +28,16 @@ class AuthGateway(Protocol):
         """Verify an OTP and return the provider's authenticated identity."""
 
 
+def create_auth_gateway(app_env: AppEnvironment, adapter: str) -> AuthGateway:
+    """Build the configured AuthGateway without silently substituting a fake in production."""
+
+    if adapter == "fake":
+        return FakeAuthGateway(app_env=app_env)
+    raise ConfigurationError(
+        "the Supabase Auth adapter is not configured; provide a production adapter before startup"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TurnCredentialRequest:
     """Context used to scope one short-lived TURN credential request."""
