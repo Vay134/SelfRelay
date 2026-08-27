@@ -99,6 +99,8 @@ npm run quality
 
 The suite checks formatting, linting, TypeScript and Python types, unit tests, and repository secrets. It does not require hosted-service credentials.
 
+The backend writes one JSON log object per line. Its logging handler recursively redacts common secret-bearing fields and values, including authorization headers, cookies, sessions, tokens, passwords, and OTPs. `LOG_LEVEL` controls the minimum emitted level.
+
 From `frontend/`, install dependencies and start the Vite server:
 
 ```text
