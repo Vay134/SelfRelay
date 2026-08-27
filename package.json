@@ -6,8 +6,8 @@
         "quality:frontend": "npm --prefix frontend run quality",
         "quality:backend": "uv run --directory backend ruff format --check app tests && uv run --directory backend ruff check app tests && uv run --directory backend mypy app tests && uv run --directory backend pytest",
         "quality:secrets": "secretlint \"**/*\"",
-        "database:test": "supabase db reset --local --no-seed && supabase migration list --local && supabase test db --local",
-        "database:lint": "supabase db lint --local --schema private --fail-on warning"
+        "database:test": "npx --no-install supabase db reset --local --no-seed && npx --no-install supabase migration list --local && npx --no-install supabase test db --local",
+        "database:lint": "npx --no-install supabase db lint --local --schema private --fail-on warning"
     },
     "devDependencies": {
         "@secretlint/secretlint-rule-preset-recommend": "9.3.1",
