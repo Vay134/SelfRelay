@@ -13,9 +13,15 @@ from app.auth import (
 )
 from app.config import load_settings
 from app.database import Database
+from app.device_auth import DeviceAuthService
+from app.device_auth import router as device_router
 from app.logging import configure_logging
 from app.repositories import (
     AccountRepository,
+    DeviceChallengeRepository,
+    DeviceRepository,
+    InMemoryDeviceChallengeRepository,
+    InMemoryDeviceRepository,
     PersistentRateLimiter,
     RateLimitBucketRepository,
     SessionRepository,
@@ -59,6 +65,24 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         InMemorySessionRepository() if settings.app_env == "test" else SessionRepository(database)
     )
     session_service = SessionService(session_repository)
+    device_repository = (
+        InMemoryDeviceRepository(session_repository, account_store)
+        if settings.app_env == "test"
+        else DeviceRepository(database)
+    )
+    challenge_repository = (
+        InMemoryDeviceChallengeRepository(device_repository)
+        if settings.app_env == "test"
+        else DeviceChallengeRepository(database)
+    )
+    device_auth_service = DeviceAuthService(
+        account_store,
+        device_repository,
+        challenge_repository,
+        session_service,
+        bootstrap_consumer=auth_service.consume_bootstrap,
+        bootstrap_peeker=auth_service.peek_bootstrap,
+    )
     application.state.otp_service = auth_service
     application.state.auth_service = auth_service
     application.state.rate_limiter = rate_limiter
@@ -66,6 +90,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.session_service = session_service
     application.state.session_authenticator = SessionAuthenticator(session_repository)
     application.state.session_issuer = SessionIssuer(session_service)
+    application.state.device_repository = device_repository
+    application.state.device_challenge_repository = challenge_repository
+    application.state.device_auth_service = device_auth_service
     try:
         yield
     finally:
@@ -82,6 +109,7 @@ app.add_middleware(ConfiguredCORSMiddleware)
 
 app.include_router(router)
 app.include_router(session_router)
+app.include_router(device_router)
 
 
 @app.get("/health", tags=["system"])

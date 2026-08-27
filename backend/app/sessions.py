@@ -386,6 +386,49 @@ class InMemorySessionRepository:
             return None
         return await self.revoke(account_id, record.id, reason)
 
+    async def revoke_for_device(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        reason: str = "device_revoked",
+    ) -> int:
+        current = datetime.now(UTC)
+        with self._lock:
+            targets = [
+                record
+                for record in self._records.values()
+                if record.user_id == account_id
+                and record.device_id == device_id
+                and record.revoked_at is None
+            ]
+            for record in targets:
+                self._records[record.id] = self._replace(
+                    record,
+                    revoked_at=current,
+                    revocation_reason=reason,
+                )
+            return len(targets)
+
+    async def revoke_for_account(
+        self,
+        account_id: UUID,
+        reason: str = "recovery",
+    ) -> int:
+        current = datetime.now(UTC)
+        with self._lock:
+            targets = [
+                record
+                for record in self._records.values()
+                if record.user_id == account_id and record.revoked_at is None
+            ]
+            for record in targets:
+                self._records[record.id] = self._replace(
+                    record,
+                    revoked_at=current,
+                    revocation_reason=reason,
+                )
+            return len(targets)
+
     @staticmethod
     def _is_usable(record: SessionRecord, current: datetime) -> bool:
         current = current.astimezone(UTC)

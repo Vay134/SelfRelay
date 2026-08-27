@@ -8,7 +8,7 @@ import secrets
 import threading
 import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Protocol, cast
 from uuid import UUID, uuid4
@@ -201,6 +201,15 @@ class AccountStore(Protocol):
         created_at: datetime,
     ) -> AccountRecord: ...
 
+    async def get_by_id(self, account_id: UUID) -> AccountRecord | None: ...
+
+    async def rotate_epoch(
+        self,
+        account_id: UUID,
+        *,
+        recovered_at: datetime,
+    ) -> AccountRecord | None: ...
+
 
 class RepositoryAccountStore:
     """Account store backed by the private application schema."""
@@ -227,6 +236,17 @@ class RepositoryAccountStore:
                 raise ValueError("email is linked to another identity")
             return existing
         return await self._repository.create(supabase_user_id, email_normalized)
+
+    async def get_by_id(self, account_id: UUID) -> AccountRecord | None:
+        return await self._repository.get_by_id(account_id)
+
+    async def rotate_epoch(
+        self,
+        account_id: UUID,
+        *,
+        recovered_at: datetime,
+    ) -> AccountRecord | None:
+        return await self._repository.rotate_epoch(account_id, recovered_at=recovered_at)
 
 
 class InMemoryAccountStore:
@@ -268,6 +288,36 @@ class InMemoryAccountStore:
             self._by_identity[supabase_user_id] = account
             self._by_email[email_normalized] = account
             return account
+
+    async def get_by_id(self, account_id: UUID) -> AccountRecord | None:
+        with self._lock:
+            return next(
+                (account for account in self._by_identity.values() if account.id == account_id),
+                None,
+            )
+
+    async def rotate_epoch(
+        self,
+        account_id: UUID,
+        *,
+        recovered_at: datetime,
+    ) -> AccountRecord | None:
+        current = recovered_at.astimezone(UTC)
+        with self._lock:
+            account = next(
+                (item for item in self._by_identity.values() if item.id == account_id),
+                None,
+            )
+            if account is None or account.deleted_at is not None:
+                return None
+            updated = replace(
+                account,
+                device_epoch=account.device_epoch + 1,
+                recovered_at=current,
+            )
+            self._by_identity[account.supabase_user_id] = updated
+            self._by_email[account.email_normalized] = updated
+            return updated
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +398,32 @@ class BootstrapStateStore:
         token_hash = hash_secret(token)
         with self._lock:
             state = self._states.pop(token_hash, None)
+        if state is None or state.expires_at <= current:
+            return None
+        return BootstrapCredentials(
+            bootstrap_id=state.bootstrap_id,
+            token=token,
+            account_id=state.account_id,
+            email_normalized=state.email_normalized,
+            device_epoch=state.device_epoch,
+            expires_at=state.expires_at,
+        )
+
+    def peek(
+        self,
+        token: str,
+        *,
+        now: datetime | None = None,
+    ) -> BootstrapCredentials | None:
+        """Read valid bootstrap metadata without consuming the one-time value."""
+
+        current = datetime.now(UTC) if now is None else now
+        if current.tzinfo is None:
+            raise ValueError("bootstrap timestamps must be timezone-aware")
+        current = current.astimezone(UTC)
+        token_hash = hash_secret(token)
+        with self._lock:
+            state = self._states.get(token_hash)
         if state is None or state.expires_at <= current:
             return None
         return BootstrapCredentials(
@@ -470,6 +546,16 @@ class OtpBootstrapService:
         """Expose one-time consumption for the later device-registration service."""
 
         return self.bootstrap_store.consume(token, now=now)
+
+    def peek_bootstrap(
+        self,
+        token: str,
+        *,
+        now: datetime | None = None,
+    ) -> BootstrapCredentials | None:
+        """Inspect bootstrap metadata while leaving it available for recovery."""
+
+        return self.bootstrap_store.peek(token, now=now)
 
 
 class OtpStartRequest(BaseModel):
