@@ -92,3 +92,23 @@ dd {
 .status-ok {
     color: #65d6ad;
 }
+
+.device-status {
+    margin: 2rem 0 0;
+    padding: 0.9rem 1rem;
+    border: 1px solid #2e5263;
+    border-radius: 0.75rem;
+    color: #b7cbd6;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
+.device-status-ok {
+    border-color: #387d6e;
+    color: #9be7cc;
+}
+
+.device-status-warning {
+    border-color: #96723c;
+    color: #f5d7a0;
+}
