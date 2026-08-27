@@ -18,12 +18,8 @@ _DEFAULT_LOG_LEVEL: Final[LogLevel] = "INFO"
 _DEFAULT_AUTH_ADAPTER: Final[AuthAdapter] = "fake"
 _DEFAULT_TURN_ADAPTER: Final[TurnAdapter] = "fake"
 
-_APP_ENVIRONMENTS: Final[frozenset[str]] = frozenset(
-    {"development", "test", "production"}
-)
-_LOG_LEVELS: Final[frozenset[str]] = frozenset(
-    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-)
+_APP_ENVIRONMENTS: Final[frozenset[str]] = frozenset({"development", "test", "production"})
+_LOG_LEVELS: Final[frozenset[str]] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _AUTH_ADAPTERS: Final[frozenset[str]] = frozenset({"supabase", "fake"})
 _TURN_ADAPTERS: Final[frozenset[str]] = frozenset({"cloudflare", "fake"})
 
@@ -83,9 +79,7 @@ def _database_url(environ: Mapping[str, str]) -> str:
     value = _value(environ, "DATABASE_URL", "")
     parsed = urlsplit(value)
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.netloc:
-        raise ConfigurationError(
-            "DATABASE_URL must be an absolute PostgreSQL connection URL"
-        )
+        raise ConfigurationError("DATABASE_URL must be an absolute PostgreSQL connection URL")
     try:
         hostname = parsed.hostname
         port = parsed.port
@@ -144,12 +138,8 @@ class Settings:
             _TURN_ADAPTERS,
             lower=True,
         )
-        if app_env == "production" and (
-            auth_adapter == "fake" or turn_adapter == "fake"
-        ):
-            raise ConfigurationError(
-                "fake adapters are not allowed when APP_ENV is production"
-            )
+        if app_env == "production" and (auth_adapter == "fake" or turn_adapter == "fake"):
+            raise ConfigurationError("fake adapters are not allowed when APP_ENV is production")
         return cls(
             app_env=cast(AppEnvironment, app_env),
             app_origin=_origin(source, "APP_ORIGIN"),
