@@ -103,6 +103,50 @@ class WebSocketTicketRecord:
     consumed_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class TransferRequestRecord:
+    """One account-owned transfer offer and its control-plane state."""
+
+    id: UUID
+    user_id: UUID
+    sender_device_id: UUID
+    recipient_device_id: UUID
+    protocol_version: int
+    status: str
+    created_at: datetime
+    expires_at: datetime
+    accepted_at: datetime | None
+    completed_at: datetime | None
+    failure_code: str | None
+    relay_used: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityEventRecord:
+    """One short-lived security audit event."""
+
+    id: UUID
+    user_id: UUID | None
+    device_id: UUID | None
+    event_type: str
+    outcome: str
+    network_fingerprint: bytes | None
+    details: Mapping[str, object]
+    created_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitBucketRecord:
+    """One persistent, HMAC-keyed rate-limit bucket."""
+
+    scope: str
+    bucket_key: bytes
+    window_started_at: datetime
+    window_expires_at: datetime
+    request_count: int
+
+
 def account_from_row(row: Mapping[str, object]) -> AccountRecord:
     """Convert a database row into an immutable account record."""
 
@@ -200,6 +244,53 @@ def websocket_ticket_from_row(row: Mapping[str, object]) -> WebSocketTicketRecor
         created_at=cast(datetime, row["created_at"]),
         expires_at=cast(datetime, row["expires_at"]),
         consumed_at=cast(datetime | None, row["consumed_at"]),
+    )
+
+
+def transfer_request_from_row(row: Mapping[str, object]) -> TransferRequestRecord:
+    """Convert a transfer request row into an immutable record."""
+
+    return TransferRequestRecord(
+        id=cast(UUID, row["id"]),
+        user_id=cast(UUID, row["user_id"]),
+        sender_device_id=cast(UUID, row["sender_device_id"]),
+        recipient_device_id=cast(UUID, row["recipient_device_id"]),
+        protocol_version=cast(int, row["protocol_version"]),
+        status=cast(str, row["status"]),
+        created_at=cast(datetime, row["created_at"]),
+        expires_at=cast(datetime, row["expires_at"]),
+        accepted_at=cast(datetime | None, row["accepted_at"]),
+        completed_at=cast(datetime | None, row["completed_at"]),
+        failure_code=cast(str | None, row["failure_code"]),
+        relay_used=cast(bool, row["relay_used"]),
+    )
+
+
+def security_event_from_row(row: Mapping[str, object]) -> SecurityEventRecord:
+    """Convert a security event row into an immutable record."""
+
+    return SecurityEventRecord(
+        id=cast(UUID, row["id"]),
+        user_id=cast(UUID | None, row["user_id"]),
+        device_id=cast(UUID | None, row["device_id"]),
+        event_type=cast(str, row["event_type"]),
+        outcome=cast(str, row["outcome"]),
+        network_fingerprint=cast(bytes | None, row["network_fingerprint"]),
+        details=cast(Mapping[str, object], row["details"]),
+        created_at=cast(datetime, row["created_at"]),
+        expires_at=cast(datetime, row["expires_at"]),
+    )
+
+
+def rate_limit_bucket_from_row(row: Mapping[str, object]) -> RateLimitBucketRecord:
+    """Convert a rate-limit bucket row into an immutable record."""
+
+    return RateLimitBucketRecord(
+        scope=cast(str, row["scope"]),
+        bucket_key=cast(bytes, row["bucket_key"]),
+        window_started_at=cast(datetime, row["window_started_at"]),
+        window_expires_at=cast(datetime, row["window_expires_at"]),
+        request_count=cast(int, row["request_count"]),
     )
 
 
