@@ -72,11 +72,33 @@ The backend is a browser-facing API rather than a file proxy. File throughput no
 - [x] Scope and trust assumptions agreed
 - [x] Technology and hosting choices agreed
 - [x] Authentication and cryptographic design documented
-- [ ] Application scaffold
+- [x] Application scaffold
 - [ ] Authentication and device management
 - [ ] Signaling and WebRTC transport
 - [ ] Encrypted file transfer
 - [ ] Public deployment and email verification
 - [ ] Security testing and release documentation
 
-Setup instructions will be added once the first runnable phase exists. No production secrets belong in this repository.
+Production setup instructions will be added in the deployment phase. No production secrets belong in this repository.
+
+## Local development
+
+The Phase 0 scaffold runs the frontend and backend independently. Install Node.js 20+ and Python 3.12+ with [uv](https://docs.astral.sh/uv/) available.
+
+From `frontend/`, install dependencies and start the Vite server:
+
+```text
+npm install
+npm run dev
+```
+
+The frontend health page is then available at `http://localhost:5173`.
+
+From `backend/`, create the pinned Python environment and start FastAPI:
+
+```text
+uv sync
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+The API health check is available at `http://localhost:8000/health`. Run its test with `uv run pytest` and build the frontend with `npm run build`. The `.env.example` files contain safe local placeholders only; copy them to `.env` when configuration is added in a later phase.
