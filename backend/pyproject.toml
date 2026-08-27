@@ -18,9 +18,26 @@ packages = ["app"]
 [dependency-groups]
 dev = [
     "httpx==0.28.1",
+    "mypy==1.17.1",
     "pytest==8.4.1",
+    "ruff==0.12.10",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

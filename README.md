@@ -83,7 +83,21 @@ Production setup instructions will be added in the deployment phase. No producti
 
 ## Local development
 
-The Phase 0 scaffold runs the frontend and backend independently. Install Node.js 20+ and Python 3.12+ with [uv](https://docs.astral.sh/uv/) available.
+The Phase 0 scaffold runs the frontend and backend independently. Install Node.js 20+ and Python 3.12+ with [uv](https://docs.astral.sh/uv/) available. From the project root, install the root scanner and frontend dependencies, then create the pinned Python environment:
+
+```text
+npm install
+npm --prefix frontend install
+uv sync --directory backend
+```
+
+Run the complete local quality suite from the project root:
+
+```text
+npm run quality
+```
+
+The suite checks formatting, linting, TypeScript and Python types, unit tests, and repository secrets. It does not require hosted-service credentials.
 
 From `frontend/`, install dependencies and start the Vite server:
 

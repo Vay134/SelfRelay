@@ -17,7 +17,7 @@ function App() {
                 </dl>
             </section>
         </main>
-    )
+    );
 }
 
-export default App
+export default App;
