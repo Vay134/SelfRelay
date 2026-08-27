@@ -1,14 +1,18 @@
 """Core private-schema repository boundary."""
 
 from .accounts import AccountRepository, AppUserRepository
-from .challenges import ChallengeRepository, DeviceChallengeRepository
+from .challenges import (
+    ChallengeRepository,
+    DeviceChallengeRepository,
+    InMemoryDeviceChallengeRepository,
+)
 from .cleanup import (
     DEFAULT_CLEANUP_BATCH_SIZE,
     MAX_CLEANUP_BATCH_SIZE,
     CleanupRepository,
     ExpiryCleanupRepository,
 )
-from .devices import DeviceRepository, TrustedDeviceRepository
+from .devices import DeviceRepository, InMemoryDeviceRepository, TrustedDeviceRepository
 from .models import (
     AccountRecord,
     AppUserRecord,
@@ -38,6 +42,7 @@ __all__ = [
     "DEFAULT_CLEANUP_BATCH_SIZE",
     "DeviceChallengeRecord",
     "DeviceChallengeRepository",
+    "InMemoryDeviceChallengeRepository",
     "DeviceRecord",
     "DeviceRepository",
     "ExpiryCleanupRepository",
@@ -54,6 +59,7 @@ __all__ = [
     "SecurityEventRepository",
     "SessionRecord",
     "SessionRepository",
+    "InMemoryDeviceRepository",
     "TransferRepository",
     "TransferRequestRecord",
     "TransferRequestRepository",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from .base import RepositoryDatabase, first_row, required_row
@@ -78,6 +79,26 @@ class AccountRepository:
             email_normalized,
         )
         return account_from_row(required_row(rows))
+
+    async def rotate_epoch(
+        self,
+        account_id: UUID,
+        *,
+        recovered_at: datetime,
+    ) -> AccountRecord | None:
+        """Advance an account epoch and record the recovery time."""
+
+        rows = await self._database.fetch(
+            f"""UPDATE private.app_users
+            SET device_epoch = device_epoch + 1,
+                recovered_at = $2
+            WHERE id = $1 AND deleted_at IS NULL
+            RETURNING {_ACCOUNT_COLUMNS}""",
+            account_id,
+            recovered_at,
+        )
+        row = first_row(rows)
+        return None if row is None else account_from_row(row)
 
 
 # ``AppUserRepository`` mirrors the table name for callers that use schema terms.

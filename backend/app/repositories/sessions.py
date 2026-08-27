@@ -320,6 +320,25 @@ class SessionRepository:
         )
         return len(rows)
 
+    async def revoke_for_account(
+        self,
+        account_id: UUID,
+        reason: str = "recovery",
+    ) -> int:
+        """Revoke every active session for an account in one statement."""
+
+        rows = await self._database.fetch(
+            """UPDATE private.app_sessions
+            SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
+                revocation_reason = $2
+            WHERE user_id = $1
+              AND revoked_at IS NULL
+            RETURNING id""",
+            account_id,
+            reason,
+        )
+        return len(rows)
+
     async def list_by_account(self, account_id: UUID) -> list[SessionRecord]:
         """Compatibility name for callers that use ``by_account`` terminology."""
 
