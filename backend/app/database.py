@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Protocol, cast
 
 import asyncpg  # type: ignore[import-untyped]
+
+from .repositories.base import RepositoryDatabase
+
+
+class _Connection(Protocol):
+    """Subset of an asyncpg connection used by repository transactions."""
+
+    async def fetch(self, query: str, *parameters: object) -> list[object]: ...
+
+    def transaction(self) -> AbstractAsyncContextManager[object]: ...
+
+
+class _PoolAcquireContext(Protocol):
+    async def __aenter__(self) -> _Connection: ...
+
+    async def __aexit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> bool | None: ...
 
 
 class _Pool(Protocol):
@@ -13,6 +33,8 @@ class _Pool(Protocol):
     async def fetch(self, query: str, *parameters: object) -> list[object]: ...
 
     async def execute(self, query: str, *parameters: object) -> str: ...
+
+    def acquire(self) -> _PoolAcquireContext: ...
 
 
 class Database:
@@ -55,3 +77,11 @@ class Database:
         """Execute a command using asyncpg's positional query parameters."""
 
         return await self.pool.execute(query, *parameters)
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[RepositoryDatabase]:
+        """Yield a repository database bound to one committed transaction."""
+
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                yield cast(RepositoryDatabase, connection)

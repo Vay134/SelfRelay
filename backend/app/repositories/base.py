@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol, cast
 
 QueryRow = Mapping[str, object]
@@ -12,6 +13,12 @@ class RepositoryDatabase(Protocol):
     """Database operations required by the core repositories."""
 
     async def fetch(self, query: str, *parameters: object) -> list[object]: ...
+
+
+class TransactionalRepositoryDatabase(RepositoryDatabase, Protocol):
+    """Repository database boundary that can scope work to one transaction."""
+
+    def transaction(self) -> AbstractAsyncContextManager[RepositoryDatabase]: ...
 
 
 def first_row(rows: list[object]) -> QueryRow | None:

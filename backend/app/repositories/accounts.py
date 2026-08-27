@@ -79,5 +79,6 @@ class AccountRepository:
         )
         return account_from_row(required_row(rows))
 
+
 # ``AppUserRepository`` mirrors the table name for callers that use schema terms.
 AppUserRepository = AccountRepository
