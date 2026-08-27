@@ -57,6 +57,52 @@ class SessionRecord:
     revocation_reason: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DeviceChallengeRecord:
+    """One short-lived, one-time challenge issued to a trusted device."""
+
+    id: UUID
+    device_id: UUID
+    nonce_hash: bytes
+    origin: str
+    created_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None
+    attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PairingRequestRecord:
+    """One account-owned request to enroll a new trusted device."""
+
+    id: UUID
+    user_id: UUID
+    requested_public_key_spki: bytes
+    requested_fingerprint: bytes
+    requested_label: str
+    request_nonce: bytes
+    comparison_code_hash: bytes
+    status: str
+    attempt_count: int
+    approved_by_device_id: UUID | None
+    approval_signature: bytes | None
+    created_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class WebSocketTicketRecord:
+    """One short-lived, single-use ticket bound to an application session."""
+
+    id: UUID
+    session_id: UUID
+    token_hash: bytes
+    created_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None
+
+
 def account_from_row(row: Mapping[str, object]) -> AccountRecord:
     """Convert a database row into an immutable account record."""
 
@@ -105,6 +151,55 @@ def session_from_row(row: Mapping[str, object]) -> SessionRecord:
         absolute_expires_at=cast(datetime, row["absolute_expires_at"]),
         revoked_at=cast(datetime | None, row["revoked_at"]),
         revocation_reason=cast(str | None, row["revocation_reason"]),
+    )
+
+
+def device_challenge_from_row(row: Mapping[str, object]) -> DeviceChallengeRecord:
+    """Convert a database row into an immutable device challenge record."""
+
+    return DeviceChallengeRecord(
+        id=cast(UUID, row["id"]),
+        device_id=cast(UUID, row["device_id"]),
+        nonce_hash=cast(bytes, row["nonce_hash"]),
+        origin=cast(str, row["origin"]),
+        created_at=cast(datetime, row["created_at"]),
+        expires_at=cast(datetime, row["expires_at"]),
+        consumed_at=cast(datetime | None, row["consumed_at"]),
+        attempt_count=cast(int, row["attempt_count"]),
+    )
+
+
+def pairing_request_from_row(row: Mapping[str, object]) -> PairingRequestRecord:
+    """Convert a database row into an immutable pairing request record."""
+
+    return PairingRequestRecord(
+        id=cast(UUID, row["id"]),
+        user_id=cast(UUID, row["user_id"]),
+        requested_public_key_spki=cast(bytes, row["requested_public_key_spki"]),
+        requested_fingerprint=cast(bytes, row["requested_fingerprint"]),
+        requested_label=cast(str, row["requested_label"]),
+        request_nonce=cast(bytes, row["request_nonce"]),
+        comparison_code_hash=cast(bytes, row["comparison_code_hash"]),
+        status=cast(str, row["status"]),
+        attempt_count=cast(int, row["attempt_count"]),
+        approved_by_device_id=cast(UUID | None, row["approved_by_device_id"]),
+        approval_signature=cast(bytes | None, row["approval_signature"]),
+        created_at=cast(datetime, row["created_at"]),
+        expires_at=cast(datetime, row["expires_at"]),
+        consumed_at=cast(datetime | None, row["consumed_at"]),
+    )
+
+
+def websocket_ticket_from_row(row: Mapping[str, object]) -> WebSocketTicketRecord:
+    """Convert a database row into an immutable WebSocket ticket record."""
+
+    return WebSocketTicketRecord(
+        id=cast(UUID, row["id"]),
+        session_id=cast(UUID, row["session_id"]),
+        token_hash=cast(bytes, row["token_hash"]),
+        created_at=cast(datetime, row["created_at"]),
+        expires_at=cast(datetime, row["expires_at"]),
+        consumed_at=cast(datetime | None, row["consumed_at"]),
     )
 
 
