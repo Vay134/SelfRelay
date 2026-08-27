@@ -16,12 +16,16 @@ from app.database import Database
 from app.device_auth import DeviceAuthService
 from app.device_auth import router as device_router
 from app.logging import configure_logging
+from app.pairings import PairingRequestService
+from app.pairings import router as pairing_router
 from app.repositories import (
     AccountRepository,
     DeviceChallengeRepository,
     DeviceRepository,
     InMemoryDeviceChallengeRepository,
     InMemoryDeviceRepository,
+    InMemoryPairingRequestRepository,
+    PairingRequestRepository,
     PersistentRateLimiter,
     RateLimitBucketRepository,
     SessionRepository,
@@ -75,6 +79,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if settings.app_env == "test"
         else DeviceChallengeRepository(database)
     )
+    pairing_repository = (
+        InMemoryPairingRequestRepository()
+        if settings.app_env == "test"
+        else PairingRequestRepository(database)
+    )
     device_auth_service = DeviceAuthService(
         account_store,
         device_repository,
@@ -92,6 +101,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.session_issuer = SessionIssuer(session_service)
     application.state.device_repository = device_repository
     application.state.device_challenge_repository = challenge_repository
+    application.state.pairing_repository = pairing_repository
+    application.state.pairing_request_service = PairingRequestService(
+        account_store,
+        pairing_repository,
+    )
     application.state.device_auth_service = device_auth_service
     try:
         yield
@@ -110,6 +124,7 @@ app.add_middleware(ConfiguredCORSMiddleware)
 app.include_router(router)
 app.include_router(session_router)
 app.include_router(device_router)
+app.include_router(pairing_router)
 
 
 @app.get("/health", tags=["system"])

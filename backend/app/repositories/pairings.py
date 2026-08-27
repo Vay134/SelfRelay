@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import threading
+from datetime import UTC, datetime
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from .base import (
     RepositoryDatabase,
@@ -225,6 +226,87 @@ class PairingRequestRepository:
         """Compatibility name for callers that make the approval precondition explicit."""
 
         return await self.consume(account_id, request_id)
+
+
+class InMemoryPairingRequestRepository:
+    """Explicit test-only pairing-request store used without a database connection."""
+
+    def __init__(self) -> None:
+        self._records: dict[UUID, PairingRequestRecord] = {}
+        self._lock = threading.Lock()
+
+    async def get_by_id(
+        self,
+        account_id: UUID,
+        request_id: UUID,
+    ) -> PairingRequestRecord | None:
+        with self._lock:
+            record = self._records.get(request_id)
+            return record if record is not None and record.user_id == account_id else None
+
+    async def get_pending_by_fingerprint(
+        self,
+        account_id: UUID,
+        requested_fingerprint: bytes,
+    ) -> PairingRequestRecord | None:
+        current = datetime.now(UTC)
+        with self._lock:
+            return next(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.user_id == account_id
+                    and record.requested_fingerprint == bytes(requested_fingerprint)
+                    and record.status == "pending"
+                    and record.expires_at > current
+                ),
+                None,
+            )
+
+    async def list_pending_for_account(self, account_id: UUID) -> list[PairingRequestRecord]:
+        current = datetime.now(UTC)
+        with self._lock:
+            records = [
+                record
+                for record in self._records.values()
+                if record.user_id == account_id
+                and record.status == "pending"
+                and record.expires_at > current
+            ]
+        return sorted(records, key=lambda record: record.created_at, reverse=True)
+
+    async def create(
+        self,
+        account_id: UUID,
+        requested_public_key_spki: bytes,
+        requested_fingerprint: bytes,
+        requested_label: str,
+        request_nonce: bytes,
+        comparison_code_hash: bytes,
+        expires_at: datetime,
+    ) -> PairingRequestRecord:
+        created_at = datetime.now(UTC)
+        if expires_at <= created_at:
+            raise ValueError("pairing request expiry must be in the future")
+        record = PairingRequestRecord(
+            id=uuid4(),
+            user_id=account_id,
+            requested_public_key_spki=bytes(requested_public_key_spki),
+            requested_fingerprint=bytes(requested_fingerprint),
+            requested_label=requested_label,
+            request_nonce=bytes(request_nonce),
+            comparison_code_hash=bytes(comparison_code_hash),
+            status="pending",
+            attempt_count=0,
+            approved_by_device_id=None,
+            approval_signature=None,
+            created_at=created_at,
+            expires_at=expires_at,
+            consumed_at=None,
+        )
+        with self._lock:
+            self._records[record.id] = record
+        return record
 
 
 # Keep schema terminology available to callers that use the table name.

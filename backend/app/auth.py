@@ -203,6 +203,8 @@ class AccountStore(Protocol):
 
     async def get_by_id(self, account_id: UUID) -> AccountRecord | None: ...
 
+    async def get_by_email(self, email_normalized: str) -> AccountRecord | None: ...
+
     async def rotate_epoch(
         self,
         account_id: UUID,
@@ -239,6 +241,9 @@ class RepositoryAccountStore:
 
     async def get_by_id(self, account_id: UUID) -> AccountRecord | None:
         return await self._repository.get_by_id(account_id)
+
+    async def get_by_email(self, email_normalized: str) -> AccountRecord | None:
+        return await self._repository.get_by_email(email_normalized)
 
     async def rotate_epoch(
         self,
@@ -295,6 +300,11 @@ class InMemoryAccountStore:
                 (account for account in self._by_identity.values() if account.id == account_id),
                 None,
             )
+
+    async def get_by_email(self, email_normalized: str) -> AccountRecord | None:
+        with self._lock:
+            account = self._by_email.get(email_normalized)
+            return None if account is None or account.deleted_at is not None else account
 
     async def rotate_epoch(
         self,
