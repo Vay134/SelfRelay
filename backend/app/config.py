@@ -79,6 +79,27 @@ def _origin(environ: Mapping[str, str], name: str) -> str:
     return value.rstrip("/")
 
 
+def _database_url(environ: Mapping[str, str]) -> str:
+    value = _value(environ, "DATABASE_URL", "")
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.netloc:
+        raise ConfigurationError(
+            "DATABASE_URL must be an absolute PostgreSQL connection URL"
+        )
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise ConfigurationError("DATABASE_URL must use a valid port") from error
+    if not hostname:
+        raise ConfigurationError("DATABASE_URL must include a host")
+    if port is not None and not 0 <= port <= 65535:
+        raise ConfigurationError("DATABASE_URL must use a valid port")
+    if parsed.fragment:
+        raise ConfigurationError("DATABASE_URL must not include a fragment")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Validated runtime settings for the application."""
@@ -86,6 +107,7 @@ class Settings:
     app_env: AppEnvironment
     app_origin: str
     api_origin: str
+    database_url: str
     log_level: LogLevel
     auth_adapter: AuthAdapter
     turn_adapter: TurnAdapter
@@ -132,6 +154,7 @@ class Settings:
             app_env=cast(AppEnvironment, app_env),
             app_origin=_origin(source, "APP_ORIGIN"),
             api_origin=_origin(source, "API_ORIGIN"),
+            database_url=_database_url(source),
             log_level=cast(LogLevel, log_level),
             auth_adapter=cast(AuthAdapter, auth_adapter),
             turn_adapter=cast(TurnAdapter, turn_adapter),

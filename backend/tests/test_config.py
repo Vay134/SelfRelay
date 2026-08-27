@@ -8,6 +8,7 @@ def _environment(**overrides: str) -> dict[str, str]:
         "APP_ENV": "test",
         "APP_ORIGIN": "http://localhost:5173",
         "API_ORIGIN": "http://localhost:8000",
+        "DATABASE_URL": "postgresql://localhost:5432/e2e_secure_file_transfer",
         "LOG_LEVEL": "INFO",
         "AUTH_ADAPTER": "fake",
         "TURN_ADAPTER": "fake",
@@ -23,6 +24,7 @@ def test_load_settings_returns_typed_values() -> None:
     assert settings.app_env == "test"
     assert settings.app_origin == "http://localhost:5173"
     assert settings.api_origin == "http://localhost:8000"
+    assert settings.database_url == "postgresql://localhost:5432/e2e_secure_file_transfer"
     assert settings.log_level == "DEBUG"
     assert settings.auth_adapter == "fake"
     assert settings.turn_adapter == "fake"
@@ -57,6 +59,15 @@ def test_origin_trailing_slash_is_normalized() -> None:
 
     assert settings.app_origin == "https://app.example.test"
     assert settings.api_origin == "https://api.example.test"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "http://database.example.test", "postgresql://", "postgresql://db.example.test:bad"],
+)
+def test_invalid_database_urls_are_rejected(value: str) -> None:
+    with pytest.raises(ConfigurationError, match="DATABASE_URL"):
+        load_settings(_environment(DATABASE_URL=value))
 
 
 @pytest.mark.parametrize("value", ["TRACE", "VERBOSE", "", "123"])
