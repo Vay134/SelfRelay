@@ -1,0 +1,2 @@
+-- The application has no development seed data. Database tests create and roll
+-- back their own synthetic records.
