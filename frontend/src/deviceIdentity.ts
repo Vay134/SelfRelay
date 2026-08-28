@@ -1,3 +1,11 @@
+import {
+    canonicalJson as protocolCanonicalJson,
+    canonicalJsonBytes as protocolCanonicalJsonBytes,
+    decodeBase64Url as protocolDecodeBase64Url,
+    encodeBase64Url as protocolEncodeBase64Url,
+    normalizeP1363Signature,
+} from './transferProtocol';
+
 /**
  * Browser-owned device identity.
  *
@@ -133,64 +141,29 @@ function randomUuid(): string {
 }
 
 export function encodeBase64Url(value: unknown): string {
-    const bytes =
-        value instanceof Uint8Array
-            ? value
-            : value instanceof ArrayBuffer
-              ? new Uint8Array(value)
-              : (() => {
-                    const view = value as ArrayBufferView;
-                    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-                })();
-    let binary = '';
-    for (let index = 0; index < bytes.byteLength; index += 1) {
-        binary += String.fromCharCode(bytes[index]);
+    if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+        return protocolEncodeBase64Url(value);
     }
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+    if (ArrayBuffer.isView(value)) {
+        return protocolEncodeBase64Url(value);
+    }
+    throw new TypeError('A byte value is required.');
 }
 
 export function decodeBase64Url(value: string): Uint8Array {
-    if (!value || !/^[A-Za-z0-9_-]+$/u.test(value)) {
-        throw new TypeError('Invalid base64url value.');
-    }
-    const padding = '='.repeat((4 - (value.length % 4)) % 4);
-    let binary: string;
     try {
-        binary = atob(value.replace(/-/g, '+').replace(/_/g, '/') + padding);
+        return protocolDecodeBase64Url(value);
     } catch (error) {
         throw new TypeError('Invalid base64url value.', { cause: error });
     }
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function canonicalValue(value: unknown): unknown {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-        return value;
-    }
-    if (typeof value === 'number') {
-        if (!Number.isFinite(value)) {
-            throw new TypeError('Canonical JSON does not support non-finite numbers.');
-        }
-        return value;
-    }
-    if (Array.isArray(value)) {
-        return value.map(canonicalValue);
-    }
-    if (typeof value === 'object') {
-        const entries = Object.entries(value as Record<string, unknown>)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([key, nested]) => [key, canonicalValue(nested)] as const);
-        return Object.fromEntries(entries);
-    }
-    throw new TypeError('Canonical JSON does not support this value.');
 }
 
 export function canonicalJson(value: unknown): string {
-    return JSON.stringify(canonicalValue(value));
+    return protocolCanonicalJson(value);
 }
 
 export function canonicalJsonBytes(value: unknown): Uint8Array {
-    return new TextEncoder().encode(canonicalJson(value));
+    return protocolCanonicalJsonBytes(value);
 }
 
 export function signedChallengeBytes(payload: unknown): Uint8Array {
@@ -296,7 +269,7 @@ async function signDomainPayloadBytes(
         identity.privateKey,
         signedDomainPayloadBytes(domain, payload) as BufferSource,
     );
-    const bytes = copyBytes(signature);
+    const bytes = normalizeP1363Signature(signature);
     if (bytes.byteLength !== 64) {
         throw new DeviceStorageUnavailableError(
             'This browser returned an unsupported ECDSA signature.',
