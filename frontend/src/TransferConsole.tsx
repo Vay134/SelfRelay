@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { listDevices } from './accountApi';
 import { ApiError, getCurrentSession, type CurrentSession } from './pairingApi';
 import { DeviceKeyMissingError, loadDeviceIdentity, type DeviceIdentity } from './deviceIdentity';
 import {
@@ -302,10 +303,15 @@ function TransferConsole() {
                     );
                 }
                 const current = sessionRef.current;
-                if (current && identity.deviceId !== current.device_id) {
-                    throw new DeviceKeyMissingError(
-                        'The saved device key belongs to a different trusted device.',
+                if (current) {
+                    const trustedDevice = (await listDevices()).find(
+                        (device) => device.device_id === current.device_id,
                     );
+                    if (!trustedDevice || identity.fingerprint !== trustedDevice.fingerprint) {
+                        throw new DeviceKeyMissingError(
+                            'The saved device key belongs to a different trusted device.',
+                        );
+                    }
                 }
                 return identity;
             })();
