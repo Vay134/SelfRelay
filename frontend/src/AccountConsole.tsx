@@ -106,16 +106,56 @@ function ConfirmDialog({
     onCancel: () => void;
     onConfirm: () => void;
 }) {
+    const dialog = useRef<HTMLDivElement>(null);
     const confirmButton = useRef<HTMLButtonElement>(null);
+    const previouslyFocused = useRef<HTMLElement | null>(null);
 
     useEffect(() => {
         if (!confirmation) {
             return undefined;
         }
+        previouslyFocused.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null;
         confirmButton.current?.focus();
+        return () => {
+            if (previouslyFocused.current?.isConnected) {
+                previouslyFocused.current.focus();
+            }
+        };
+    }, [confirmation]);
+
+    useEffect(() => {
+        if (!confirmation) {
+            return undefined;
+        }
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape' && !busy) {
+                event.preventDefault();
                 onCancel();
+                return;
+            }
+            if (event.key !== 'Tab') {
+                return;
+            }
+            const focusable = dialog.current?.querySelectorAll<HTMLElement>(
+                'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+            );
+            if (!focusable?.length) {
+                event.preventDefault();
+                return;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            const active = document.activeElement;
+            if (!dialog.current?.contains(active)) {
+                event.preventDefault();
+                first.focus();
+            } else if (event.shiftKey && active === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && active === last) {
+                event.preventDefault();
+                first.focus();
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -129,6 +169,7 @@ function ConfirmDialog({
     return (
         <div className="dialog-backdrop" role="presentation">
             <div
+                ref={dialog}
                 className="confirm-dialog"
                 role="dialog"
                 aria-modal="true"
@@ -424,11 +465,22 @@ function DeviceCard({
                                 disabled={busy}
                             />
                         </label>
-                        <button className="button button-secondary button-small" type="submit" disabled={busy}>
+                        <button
+                            className="button button-secondary button-small"
+                            type="submit"
+                            disabled={busy}
+                            aria-label={`Save label for ${device.label}`}
+                        >
                             {busy ? 'Saving…' : 'Save label'}
                         </button>
                     </form>
-                    <button className="button button-danger" type="button" onClick={onRevoke} disabled={busy}>
+                    <button
+                        className="button button-danger"
+                        type="button"
+                        onClick={onRevoke}
+                        disabled={busy}
+                        aria-label={`Revoke ${current ? 'this browser' : `${device.label} browser`}`}
+                    >
                         Revoke browser
                     </button>
                 </>
@@ -471,10 +523,22 @@ function AccountDashboard({
                     <p>Manage the browsers that can approve pairings and transfer files.</p>
                 </div>
                 <div className="request-actions account-actions">
-                    <button className="button button-small" type="button" onClick={onRefresh} disabled={busy}>
+                    <button
+                        className="button button-small"
+                        type="button"
+                        onClick={onRefresh}
+                        disabled={busy}
+                        aria-label="Refresh account details"
+                    >
                         Refresh
                     </button>
-                    <button className="button button-secondary button-small" type="button" onClick={onLogout} disabled={busy}>
+                    <button
+                        className="button button-secondary button-small"
+                        type="button"
+                        onClick={onLogout}
+                        disabled={busy}
+                        aria-label="Sign out of this browser"
+                    >
                         Sign out
                     </button>
                 </div>

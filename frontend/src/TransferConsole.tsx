@@ -1014,8 +1014,11 @@ function TransferConsole() {
                         <p className="request-label">Start a transfer</p>
                         <strong>Choose an online browser</strong>
                     </div>
+                    <label className="sr-only" htmlFor="transfer-recipient">
+                        Recipient browser
+                    </label>
                     <select
-                        aria-label="Recipient device"
+                        id="transfer-recipient"
                         value={selectedDeviceId}
                         onChange={(event) => setSelectedDeviceId(event.target.value)}
                         disabled={otherDevices.length === 0 || busyTransferId === 'new'}
@@ -1081,6 +1084,7 @@ function TransferConsole() {
                                                 type="button"
                                                 onClick={() => void handleAccept(transfer)}
                                                 disabled={busy}
+                                                aria-label={`Accept transfer from ${deviceName(transfer.sender_device_id, session, devices)}`}
                                             >
                                                 {busy ? 'Opening…' : 'Accept transfer'}
                                             </button>
@@ -1089,6 +1093,7 @@ function TransferConsole() {
                                                 type="button"
                                                 onClick={() => void handleReject(transfer)}
                                                 disabled={busy}
+                                                aria-label={`Reject transfer from ${deviceName(transfer.sender_device_id, session, devices)}`}
                                             >
                                                 Reject
                                             </button>
@@ -1109,6 +1114,7 @@ function TransferConsole() {
                             className="button button-small"
                             type="button"
                             onClick={() => void refresh()}
+                            aria-label="Refresh transfer activity"
                         >
                             Refresh
                         </button>
@@ -1234,7 +1240,8 @@ function TransferConsole() {
                                                 <progress
                                                     max={progressMax}
                                                     value={progressValue}
-                                                    aria-label="Transfer progress"
+                                                    aria-label={`Transfer progress from ${deviceName(transfer.sender_device_id, session, devices)} to ${deviceName(transfer.recipient_device_id, session, devices)}`}
+                                                    aria-valuetext={`${progressPercent}% complete`}
                                                     style={{ width: '100%' }}
                                                 />
                                                 {run.error && (
@@ -1275,7 +1282,7 @@ function TransferConsole() {
                                                     <input
                                                         id={`transfer-file-${transfer.transfer_id}`}
                                                         type="file"
-                                                        aria-label="File to send"
+                                                        aria-label={`File to send to ${deviceName(transfer.recipient_device_id, session, devices)}`}
                                                         onChange={(event) => {
                                                             const file =
                                                                 event.currentTarget.files?.[0];
@@ -1299,6 +1306,7 @@ function TransferConsole() {
                                                     type="button"
                                                     onClick={() => void handleCancel(transfer)}
                                                     disabled={busy}
+                                                    aria-label={`Cancel transfer with ${deviceName(transfer.recipient_device_id === session?.device_id ? transfer.sender_device_id : transfer.recipient_device_id, session, devices)}`}
                                                 >
                                                     Cancel
                                                 </button>

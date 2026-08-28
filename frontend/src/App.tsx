@@ -1,4 +1,11 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import {
+    type FormEvent,
+    type KeyboardEvent as ReactKeyboardEvent,
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+} from 'react';
 
 import {
     ApiError,
@@ -25,6 +32,11 @@ import {
 import AccountConsole from './AccountConsole';
 import ConfirmationDialog from './ConfirmationDialog';
 import TransferConsole from './TransferConsole';
+import {
+    nextWorkspaceView,
+    WORKSPACE_VIEWS,
+    type WorkspaceView,
+} from './workspaceTabs';
 
 const REQUEST_POLL_INTERVAL_MS = 2_000;
 const PENDING_REQUEST_REFRESH_INTERVAL_MS = 5_000;
@@ -131,7 +143,12 @@ function DeviceStatus() {
     }[status];
 
     return (
-        <span className={`status-chip status-chip-${status}`} data-testid="device-key-status">
+        <span
+            className={`status-chip status-chip-${status}`}
+            data-testid="device-key-status"
+            role="status"
+            aria-live="polite"
+        >
             <span className="status-dot" aria-hidden="true" />
             {statusCopy}
         </span>
@@ -545,7 +562,9 @@ function TrustedDevicePairing() {
             <section className="pairing-panel empty-panel" aria-labelledby="trusted-device-title">
                 <p className="section-kicker">Trusted device</p>
                 <h2 id="trusted-device-title">Looking for a trusted session…</h2>
-                <p className="empty-copy">Checking whether this browser can approve new devices.</p>
+                <p className="empty-copy" role="status" aria-live="polite">
+                    Checking whether this browser can approve new devices.
+                </p>
             </section>
         );
     }
@@ -586,6 +605,7 @@ function TrustedDevicePairing() {
                         className="button button-small"
                         type="button"
                         onClick={() => void refresh()}
+                        aria-label="Refresh pending browser requests"
                     >
                         Refresh
                     </button>
@@ -677,6 +697,7 @@ function TrustedDevicePairing() {
                                             type="button"
                                             onClick={() => handleApprove(pairingRequest)}
                                             disabled={busy || code.length !== 6}
+                                            aria-label={`Approve ${pairingRequest.requested_label} browser`}
                                         >
                                             {busy ? 'Working…' : 'Approve browser'}
                                         </button>
@@ -685,6 +706,7 @@ function TrustedDevicePairing() {
                                             type="button"
                                             onClick={() => void handleReject(pairingRequest)}
                                             disabled={busy}
+                                            aria-label={`Reject ${pairingRequest.requested_label} browser`}
                                         >
                                             Reject
                                         </button>
@@ -710,9 +732,35 @@ function TrustedDevicePairing() {
 }
 
 function PairingConsole() {
-    const [view, setView] = useState<'account' | 'new-browser' | 'trusted-device' | 'transfers'>(
-        'account',
-    );
+    const [view, setView] = useState<WorkspaceView>('account');
+    const tabRefs = useRef<Partial<Record<WorkspaceView, HTMLButtonElement>>>({});
+
+    const selectView = (nextView: WorkspaceView, focusTab = false) => {
+        setView(nextView);
+        if (focusTab) {
+            tabRefs.current[nextView]?.focus();
+        }
+    };
+
+    const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+        const nextView = nextWorkspaceView(view, event.key);
+        if (!nextView) {
+            return;
+        }
+        event.preventDefault();
+        selectView(nextView, true);
+    };
+
+    const panelContent =
+        view === 'account' ? (
+            <AccountConsole />
+        ) : view === 'new-browser' ? (
+            <NewBrowserPairing />
+        ) : view === 'trusted-device' ? (
+            <TrustedDevicePairing />
+        ) : (
+            <TransferConsole />
+        );
 
     return (
         <div className="app-frame">
@@ -736,53 +784,93 @@ function PairingConsole() {
                     exact device key. The comparison code is never enough on its own.
                 </p>
             </div>
-            <nav className="view-tabs" aria-label="Secure transfer workspace">
+            <nav
+                className="view-tabs"
+                aria-label="Secure transfer workspace"
+                role="tablist"
+                aria-orientation="horizontal"
+            >
                 <button
+                    ref={(element) => {
+                        tabRefs.current.account = element ?? undefined;
+                    }}
+                    id="workspace-tab-account"
                     className={view === 'account' ? 'tab tab-active' : 'tab'}
                     type="button"
+                    role="tab"
                     aria-selected={view === 'account'}
-                    onClick={() => setView('account')}
+                    aria-controls="workspace-panel-account"
+                    tabIndex={view === 'account' ? 0 : -1}
+                    onClick={() => selectView('account')}
+                    onKeyDown={handleTabKeyDown}
                 >
                     Account
                     <span>Access and trusted devices</span>
                 </button>
                 <button
+                    ref={(element) => {
+                        tabRefs.current['new-browser'] = element ?? undefined;
+                    }}
+                    id="workspace-tab-new-browser"
                     className={view === 'new-browser' ? 'tab tab-active' : 'tab'}
                     type="button"
+                    role="tab"
                     aria-selected={view === 'new-browser'}
-                    onClick={() => setView('new-browser')}
+                    aria-controls="workspace-panel-new-browser"
+                    tabIndex={view === 'new-browser' ? 0 : -1}
+                    onClick={() => selectView('new-browser')}
+                    onKeyDown={handleTabKeyDown}
                 >
                     Add this browser
                     <span>Request approval</span>
                 </button>
                 <button
+                    ref={(element) => {
+                        tabRefs.current['trusted-device'] = element ?? undefined;
+                    }}
+                    id="workspace-tab-trusted-device"
                     className={view === 'trusted-device' ? 'tab tab-active' : 'tab'}
                     type="button"
+                    role="tab"
                     aria-selected={view === 'trusted-device'}
-                    onClick={() => setView('trusted-device')}
+                    aria-controls="workspace-panel-trusted-device"
+                    tabIndex={view === 'trusted-device' ? 0 : -1}
+                    onClick={() => selectView('trusted-device')}
+                    onKeyDown={handleTabKeyDown}
                 >
                     Approve a browser
                     <span>Review requests</span>
                 </button>
                 <button
+                    ref={(element) => {
+                        tabRefs.current.transfers = element ?? undefined;
+                    }}
+                    id="workspace-tab-transfers"
                     className={view === 'transfers' ? 'tab tab-active' : 'tab'}
                     type="button"
+                    role="tab"
                     aria-selected={view === 'transfers'}
-                    onClick={() => setView('transfers')}
+                    aria-controls="workspace-panel-transfers"
+                    tabIndex={view === 'transfers' ? 0 : -1}
+                    onClick={() => selectView('transfers')}
+                    onKeyDown={handleTabKeyDown}
                 >
                     Transfer devices
                     <span>Presence and connection test</span>
                 </button>
             </nav>
-            {view === 'account' ? (
-                <AccountConsole />
-            ) : view === 'new-browser' ? (
-                <NewBrowserPairing />
-            ) : view === 'trusted-device' ? (
-                <TrustedDevicePairing />
-            ) : (
-                <TransferConsole />
-            )}
+            {WORKSPACE_VIEWS.map((panelView) => (
+                <div
+                    key={panelView}
+                    id={`workspace-panel-${panelView}`}
+                    className="workspace-panel"
+                    role="tabpanel"
+                    aria-labelledby={`workspace-tab-${panelView}`}
+                    hidden={view !== panelView}
+                >
+                    {view === panelView ? panelContent : null}
+                </div>
+            ))}
             <footer className="console-footer">
                 <span>Private keys stay in this browser.</span>
                 <span>Requests expire after ten minutes.</span>
