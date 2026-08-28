@@ -45,6 +45,8 @@
         },
         "tampered_frame": "AREREREREUERgREREREREREAAAAAAAAAAAAAAAAAICZErQykc0-oDJTEbF-Wn2kDKZ47K4-N9aEar6xBGbJ9QHzoBN5Opz_erTTXtAryxw",
         "tampered_sender_signature": "DV-9s6WYgfCcpDv72fYb5mvmTzwFwMi1A2qtNR7xgQn8PvVbpWvr5k4T8fIJaxuCIcUwjN_5bk8GQUJNZYL8DA",
+        "oversized_frame_header": "AREREREREUERgREREREREREAAQAAAAAAAAAAAAEAAQ",
+        "replayed_confirmation_frame": "AREREREREUERgREREREREREAAAAAAAAAAAAAAAAAICZErQykc0-oDJTEbF-Wn2kDKZ47K4-N9aEar6xBGbJ9QHzoBN5Opz_erTTXtAryxg",
         "unknown_version_frame": "AhEREREREUERgREREREREREAAAAAAAAAAAAAAAAAICZErQykc0-oDJTEbF-Wn2kDKZ47K4-N9aEar6xBGbJ9QHzoBN5Opz_erTTXtAryxg"
     },
     "manifest_frame": "AREREREREUERgREREREREREAAQAAAAAAAAABAAAAZVUhnjmM6OF8nbQJRW4C2NZ0TaDNglRiFTFPquvaaG1gLYQTrDrPWgdIYRKm--l4cq_KJAK6vXU0daoUYIrIXC0kfijZND_MX-wusVMEgXmDd9EUb1XGBHsk9CQeHkSQiF2XFob7BjPKTlxjhbqmYyKDIqoF0Q",
@@ -63,12 +65,16 @@
         "v": 1
     },
     "offer_hash": "fnH02c0dAPYjU3IX5muHIUcqO8esTtf1kI6USHH3rLs",
+    "recipient_ephemeral_fingerprint": "Pqs_ulAmth0AfL9BG5DzyI_4nPCoCIy7_D6qyoZ91mM",
+    "recipient_signing_fingerprint": "3AzmM9vMkT2vr6S4msRNjOaD_fw_YMi98hITufK1NLo",
     "r2s_key": "9BcHLr6kJxzvtFdowogVIO6vB-Iz0mJ8zvRasO7dG_I",
     "r2s_nonce_prefix": "5Ba4hA",
     "recipient_signature": "ZgnR1yA4sv0-DXUUQHg14yJllPw_pfEfmdO-BrhbctztS-DzsW0xS27ysfjTuc_WTjAMIdzc_8XruA0UhZ4lEA",
     "recipient_signing_public_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfPJ7GI0DT36KUjgDBLUaw8CJaeJ38hs1pgtI_EdmmXgHd1UQ247QQCk9msafdDDbun2t5jzpgimeBLedInhz0Q",
     "s2r_key": "_UyeW4Lr190EIOKMgJrEGJA9WLOW64JpBx7QDXoshJw",
     "s2r_nonce_prefix": "QL-72w",
+    "sender_ephemeral_fingerprint": "K5hbrfG6yCk_a5LowKzBE5vFpey7-Xpicdzw1PbGivY",
+    "sender_signing_fingerprint": "XNJS-wzokyQ2-vjM0QQJgbie5K1rn-niorfnGqyyfNM",
     "sender_signature": "DF-9s6WYgfCcpDv72fYb5mvmTzwFwMi1A2qtNR7xgQn8PvVbpWvr5k4T8fIJaxuCIcUwjN_5bk8GQUJNZYL8DA",
     "sender_signing_public_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li_hp_m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q",
     "test_only_ephemeral_private_jwks": {

@@ -6,6 +6,7 @@ import {
     decodeBase64Url,
     decryptFrame,
     deriveHandshakeMaterial,
+    fingerprintSpki,
     type HandshakeAnswerCore,
     type HandshakeOfferCore,
     importP256Spki,
@@ -37,6 +38,18 @@ describe('version 1 protocol fixtures', () => {
         const recipientPublicKey = await importP256Spki(
             decodeBase64Url(fixture.recipient_signing_public_spki),
         );
+        await expect(
+            fingerprintSpki(decodeBase64Url(fixture.sender_signing_public_spki)),
+        ).resolves.toBe(fixture.sender_signing_fingerprint);
+        await expect(
+            fingerprintSpki(decodeBase64Url(fixture.recipient_signing_public_spki)),
+        ).resolves.toBe(fixture.recipient_signing_fingerprint);
+        await expect(
+            fingerprintSpki(decodeBase64Url(offerCore.sender_ephemeral_spki)),
+        ).resolves.toBe(fixture.sender_ephemeral_fingerprint);
+        await expect(
+            fingerprintSpki(decodeBase64Url(answerCore.recipient_ephemeral_spki)),
+        ).resolves.toBe(fixture.recipient_ephemeral_fingerprint);
         const offer = {
             core: offerCore,
             signature: fixture.sender_signature,
@@ -141,6 +154,9 @@ describe('version 1 protocol fixtures', () => {
         expect(() =>
             parseFrameHeader(decodeBase64Url(fixture.invalid.unknown_version_frame).slice(0, 31)),
         ).toThrow(/unsupported/u);
+        expect(() =>
+            parseFrameHeader(decodeBase64Url(fixture.invalid.oversized_frame_header)),
+        ).toThrow(/length/u);
         await expect(
             decryptFrame({
                 key: await crypto.subtle.importKey(
