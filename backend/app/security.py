@@ -2,16 +2,111 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 
 from fastapi import HTTPException, Request, status
+from starlette.datastructures import Headers
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .config import Settings
 
 CSRF_HEADER_NAME = "X-CSRF-Token"
 ORIGIN_ERROR = "Origin not allowed."
+MAX_HTTP_REQUEST_BYTES = 64 * 1024
+# Compatibility aliases for callers that describe this as a request-body limit.
+MAX_HTTP_BODY_BYTES = MAX_HTTP_REQUEST_BYTES
+REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body too large."
+
+
+class RequestBodyLimitMiddleware:
+    """Reject oversized HTTP bodies before application handlers parse them."""
+
+    def __init__(self, app: ASGIApp, max_body_bytes: int = MAX_HTTP_REQUEST_BYTES) -> None:
+        if max_body_bytes <= 0:
+            raise ValueError("maximum request body size must be positive")
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        declared_length = _declared_body_length(headers)
+        if declared_length is not None:
+            if declared_length > self.max_body_bytes:
+                await self._too_large(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        if headers.get("transfer-encoding") is None:
+            await self.app(scope, receive, send)
+            return
+
+        body = await self._buffer_body(receive)
+        if body is None:
+            await self._too_large(scope, receive, send)
+            return
+        await self.app(scope, _replay(body), send)
+
+    async def _buffer_body(self, receive: Receive) -> bytes | None:
+        """Read a chunked body up to the limit, returning None when it overflows."""
+
+        chunks: list[bytes] = []
+        consumed = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                break
+            chunk = message.get("body", b"")
+            if isinstance(chunk, bytes) and chunk:
+                consumed += len(chunk)
+                if consumed > self.max_body_bytes:
+                    return None
+                chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        return b"".join(chunks)
+
+    async def _too_large(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response = JSONResponse(
+            {"detail": REQUEST_BODY_TOO_LARGE_MESSAGE},
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+        await response(scope, receive, send)
+
+
+def _declared_body_length(headers: Headers) -> int | None:
+    """Return the declared body size, or a rejecting size when it is unusable."""
+
+    content_length = headers.get("content-length")
+    if content_length is None:
+        return None
+    try:
+        declared = int(content_length)
+    except ValueError:
+        return sys.maxsize
+    return declared if declared >= 0 else sys.maxsize
+
+
+def _replay(body: bytes) -> Receive:
+    """Return a receive channel that replays one fully buffered request body."""
+
+    sent = False
+
+    async def receive() -> Message:
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return receive
 
 
 def configured_settings(request: Request) -> Settings:
@@ -110,7 +205,11 @@ def csrf_header(request: Request) -> str | None:
 __all__ = [
     "CSRF_HEADER_NAME",
     "ConfiguredCORSMiddleware",
+    "MAX_HTTP_BODY_BYTES",
+    "MAX_HTTP_REQUEST_BYTES",
     "ORIGIN_ERROR",
+    "REQUEST_BODY_TOO_LARGE_MESSAGE",
+    "RequestBodyLimitMiddleware",
     "check_optional_origin",
     "configured_settings",
     "csrf_header",

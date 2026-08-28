@@ -44,7 +44,7 @@ from app.repositories import (
     TransferRequestRepository,
     WebSocketTicketRepository,
 )
-from app.security import ConfiguredCORSMiddleware
+from app.security import ConfiguredCORSMiddleware, RequestBodyLimitMiddleware
 from app.session_api import SessionAuthenticator, SessionIssuer
 from app.session_api import router as session_router
 from app.sessions import InMemorySessionRepository, SessionService
@@ -197,6 +197,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(ConfiguredCORSMiddleware)
 
 app.include_router(router)
