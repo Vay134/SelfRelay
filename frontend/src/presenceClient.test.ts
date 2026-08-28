@@ -57,6 +57,7 @@ describe('PresenceSocketClient', () => {
             });
         const sockets: FakeSocket[] = [];
         const messages: unknown[] = [];
+        const statuses: string[] = [];
         const socketClient = new PresenceSocketClient({
             issueTicket,
             socketFactory: (url) => {
@@ -67,6 +68,7 @@ describe('PresenceSocketClient', () => {
             heartbeatIntervalMs: 100,
             reconnectDelayMs: 50,
             onMessage: (message) => messages.push(message),
+            onStatusChange: (status) => statuses.push(status),
         });
 
         const connected = socketClient.connect();
@@ -84,6 +86,9 @@ describe('PresenceSocketClient', () => {
         await vi.waitFor(() => expect(sockets).toHaveLength(2));
         expect(issueTicket).toHaveBeenCalledTimes(2);
         expect(sockets[1]?.url).toContain('ticket=ticket-2');
+        sockets[1]?.open();
+        await vi.waitFor(() => expect(socketClient.status).toBe('online'));
         socketClient.stop();
+        expect(statuses).toEqual(['connecting', 'online', 'reconnecting', 'online', 'idle']);
     });
 });

@@ -83,6 +83,10 @@ class FakePeerConnection {
             channel.onopen?.();
         }
     }
+
+    receiveChannel(channel: FakeDataChannel): void {
+        this.ondatachannel?.({ channel } as RTCDataChannelEvent);
+    }
 }
 
 function fakeFactory(connection: FakePeerConnection) {
@@ -155,5 +159,27 @@ describe('WebRtcTestSession', () => {
         expect(signals[0]).toEqual(
             expect.objectContaining({ type: 'sdp_answer', sdp: 'v=0\r\no=recipient' }),
         );
+    });
+
+    it('reports an injected remote DataChannel through the testable peer seam', () => {
+        const connection = new FakePeerConnection();
+        let received: RTCDataChannel | null = null;
+        const session = new WebRtcTestSession({
+            transfer,
+            role: 'recipient',
+            peerConnectionFactory: fakeFactory(connection),
+            sendSignal: () => undefined,
+            onDataChannel: (channel) => {
+                received = channel;
+            },
+        });
+        const channel = new FakeDataChannel('secure-transfer-test');
+
+        connection.receiveChannel(channel);
+        channel.readyState = 'open';
+        channel.onopen?.();
+
+        expect(received).toBe(channel);
+        expect(session.state).toBe('connected');
     });
 });

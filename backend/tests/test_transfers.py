@@ -5,12 +5,13 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import WebSocket
 
 from app.presence import ActiveConnection, PresenceManager
 from app.repositories.models import DeviceRecord
 from app.repositories.transfers import InMemoryTransferRequestRepository
-from app.transfers import TransferService
+from app.transfers import TransferError, TransferService
 
 
 class FakeSocket:
@@ -107,7 +108,15 @@ def test_signaling_transitions_and_forwards_typed_messages_between_selected_devi
         account_id = uuid4()
         sender_id = uuid4()
         recipient_id = uuid4()
-        devices = Devices([_device(account_id, sender_id), _device(account_id, recipient_id)])
+        foreign_account_id = uuid4()
+        foreign_device_id = uuid4()
+        devices = Devices(
+            [
+                _device(account_id, sender_id),
+                _device(account_id, recipient_id),
+                _device(foreign_account_id, foreign_device_id),
+            ]
+        )
         now = datetime(2026, 1, 1, tzinfo=UTC)
         repository = InMemoryTransferRequestRepository(devices, clock=lambda: now)
         sender_socket = FakeSocket()
@@ -146,8 +155,11 @@ def test_signaling_transitions_and_forwards_typed_messages_between_selected_devi
         assert await manager.forward_signaling(sender, candidate)
         assert recipient_socket.messages[-1] == candidate
 
-        foreign_sender = _connection(uuid4(), sender_id, FakeSocket(), now)
+        foreign_socket = FakeSocket()
+        foreign_sender = _connection(foreign_account_id, foreign_device_id, foreign_socket, now)
+        await manager.register(foreign_sender)
         assert not await manager.forward_signaling(foreign_sender, offer)
+        assert foreign_socket.messages == []
 
     asyncio.run(exercise())
 
@@ -179,6 +191,8 @@ def test_stale_offer_expires_and_oversized_sdp_is_rejected() -> None:
         with_expiry = await service.get(account_id, transfer.id)
         assert with_expiry.status == "expired"
         assert recipient_socket.messages[-1]["type"] == "transfer_expired"
+        with pytest.raises(TransferError):
+            await service.accept(account_id, transfer.id, recipient_id)
 
         active = await repository.create(
             account_id,
@@ -199,5 +213,42 @@ def test_stale_offer_expires_and_oversized_sdp_is_rejected() -> None:
             "sdp": "x" * 13_000,
         }
         assert not await manager.forward_signaling(sender, oversized)
+
+    asyncio.run(exercise())
+
+
+def test_terminal_transfers_reject_replay_and_foreign_cancellation() -> None:
+    async def exercise() -> None:
+        account_id = uuid4()
+        foreign_account_id = uuid4()
+        sender_id = uuid4()
+        recipient_id = uuid4()
+        foreign_device_id = uuid4()
+        devices = Devices(
+            [
+                _device(account_id, sender_id),
+                _device(account_id, recipient_id),
+                _device(foreign_account_id, foreign_device_id),
+            ]
+        )
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        repository = InMemoryTransferRequestRepository(devices, clock=lambda: now)
+        service = TransferService(repository, device_repository=devices, clock=lambda: now)
+
+        rejected = await service.create_offer(account_id, sender_id, recipient_id)
+        await service.reject(account_id, rejected.id, recipient_id)
+        with pytest.raises(TransferError):
+            await service.accept(account_id, rejected.id, recipient_id)
+        with pytest.raises(TransferError):
+            await service.cancel(account_id, rejected.id, sender_id)
+
+        active = await service.create_offer(account_id, sender_id, recipient_id)
+        await service.accept(account_id, active.id, recipient_id)
+        with pytest.raises(TransferError):
+            await service.cancel(foreign_account_id, active.id, foreign_device_id)
+        cancelled = await service.cancel(account_id, active.id, sender_id)
+        assert cancelled.status == "cancelled"
+        with pytest.raises(TransferError):
+            await service.cancel(account_id, active.id, recipient_id)
 
     asyncio.run(exercise())

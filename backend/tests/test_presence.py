@@ -20,7 +20,13 @@ from app import main
 from app.adapters import FakeAuthGateway
 from app.config import load_settings
 from app.device_crypto import signed_message
-from app.presence import ActiveConnection, DeviceRepositoryPort, PresenceManager
+from app.presence import (
+    ActiveConnection,
+    DeviceRepositoryPort,
+    MAX_WEBSOCKET_MESSAGE_BYTES,
+    PresenceManager,
+    WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE,
+)
 from app.repositories.models import DeviceRecord
 from app.repositories.websocket_tickets import InMemoryWebSocketTicketRepository
 from app.sessions import InMemorySessionRepository, SessionService
@@ -274,3 +280,27 @@ def test_ticket_route_requires_csrf_and_socket_origin_and_replay_is_rejected(
             headers={"Origin": "https://evil.example"},
         ):
             pass
+
+
+def test_websocket_closes_oversized_messages_with_bounded_payload_code(
+    client: TestClient,
+) -> None:
+    registered = _register(client, "presence-size@example.test")
+    csrf_token = cast(str, registered["csrf_token"])
+    issued = client.post(
+        "/auth/websocket/ticket",
+        headers={"Origin": APP_ORIGIN, "X-CSRF-Token": csrf_token},
+    )
+    assert issued.status_code == 200
+    ticket = cast(str, issued.json()["ticket"])
+
+    with client.websocket_connect(
+        f"/auth/ws?ticket={ticket}",
+        headers={"Origin": APP_ORIGIN},
+    ) as websocket:
+        websocket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.send_text("x" * (MAX_WEBSOCKET_MESSAGE_BYTES + 1))
+            websocket.receive_text()
+
+    assert disconnect.value.code == WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE
