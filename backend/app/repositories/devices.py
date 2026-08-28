@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import secrets
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from .base import (
     RepositoryDatabase,
@@ -359,7 +358,7 @@ class InMemoryDeviceRepository:
     ) -> DeviceRecord:
         created_at = datetime.now(UTC)
         record = DeviceRecord(
-            id=UUID(bytes=secrets.token_bytes(16)),
+            id=uuid4(),
             user_id=account_id,
             epoch=epoch,
             label=label,
