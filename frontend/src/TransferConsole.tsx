@@ -7,6 +7,7 @@ import {
     cancelTransfer,
     createTransferOffer,
     getTransferPeerDeviceKey,
+    getTransferTurnCredentials,
     listOnlineDevices,
     listTransfers,
     rejectTransfer,
@@ -25,7 +26,12 @@ import {
 } from './fileTransfer';
 import { PresenceSocketClient, type PresenceClientStatus } from './presenceClient';
 import { decodeBase64Url, importP256Spki, type DerivedHandshakeMaterial } from './transferProtocol';
-import { WebRtcTestSession, type WebRtcTestState } from './webrtcTestSession';
+import { rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
+import {
+    WebRtcTestSession,
+    type WebRtcRelayStatus,
+    type WebRtcTestState,
+} from './webrtcTestSession';
 
 type TransferConsoleState = 'checking' | 'ready' | 'signed-out' | 'error';
 
@@ -121,6 +127,7 @@ type TransferRun = {
     receivedFile?: ReceivedFile;
     receipt?: TransferReceipt;
     error?: string;
+    relayStatus?: WebRtcRelayStatus;
 };
 
 type TransferSessionContext = {
@@ -236,6 +243,19 @@ function TransferConsole() {
             transferRunsRef.current = next;
             return next;
         });
+    };
+
+    const markSessionFailed = (transferId: string, error: unknown, fallback: string): void => {
+        const message = errorMessage(error, fallback);
+        setConnectionStates((currentStates) => ({
+            ...currentStates,
+            [transferId]: 'failed',
+        }));
+        updateTransferRun(transferId, {
+            state: 'failed',
+            error: message,
+        });
+        setError(message);
     };
 
     const loadLocalIdentity = async (): Promise<DeviceIdentity> => {
@@ -421,6 +441,7 @@ function TransferConsole() {
                 decodeBase64Url(peer.public_key_spki, 1024),
                 'signing',
             );
+            const turnCredentials = await getTransferTurnCredentials(transfer.transfer_id);
             if (cancelledTransfersRef.current.has(transfer.transfer_id)) {
                 return null;
             }
@@ -436,6 +457,7 @@ function TransferConsole() {
                     transfer,
                     role,
                     sendSignal: (message) => socket.send(message),
+                    rtcConfiguration: rtcConfigurationFromTurnCredentials(turnCredentials),
                     signingKey: identity.privateKey,
                     peerSigningPublicKey,
                     accountEpoch: current.account_device_epoch,
@@ -450,6 +472,9 @@ function TransferConsole() {
                                 error: 'The browser connection could not be negotiated.',
                             });
                         }
+                    },
+                    onRelayStatusChange: (relayStatus) => {
+                        updateTransferRun(transfer.transfer_id, { relayStatus });
                     },
                     onDataChannel: (channel) => {
                         context.channel = channel;
@@ -555,8 +580,10 @@ function TransferConsole() {
             message.type === 'handshake_answer'
         ) {
             void handleSignalingMessage(message).catch((signalError: unknown) => {
-                setError(
-                    errorMessage(signalError, 'The browser connection could not be negotiated.'),
+                markSessionFailed(
+                    message.transfer_id,
+                    signalError,
+                    'The browser connection could not be negotiated.',
                 );
             });
         }
@@ -704,11 +731,11 @@ function TransferConsole() {
             }
             await testSession.start();
         } catch (sessionError) {
-            updateTransferRun(transfer.transfer_id, {
-                state: 'failed',
-                error: errorMessage(sessionError, 'The secure transfer could not start.'),
-            });
-            setError(errorMessage(sessionError, 'The secure transfer could not start.'));
+            markSessionFailed(
+                transfer.transfer_id,
+                sessionError,
+                'The secure transfer could not start.',
+            );
         }
     };
 
@@ -781,11 +808,11 @@ function TransferConsole() {
             await testSession?.start();
             setNotice('Offer accepted. Waiting for the sender to choose a file.');
         } catch (acceptError) {
-            updateTransferRun(transfer.transfer_id, {
-                state: 'failed',
-                error: errorMessage(acceptError, 'The transfer offer could not be accepted.'),
-            });
-            setError(errorMessage(acceptError, 'The transfer offer could not be accepted.'));
+            markSessionFailed(
+                transfer.transfer_id,
+                acceptError,
+                'The transfer offer could not be accepted.',
+            );
         } finally {
             setBusyTransferId(null);
         }

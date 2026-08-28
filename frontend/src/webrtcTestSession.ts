@@ -23,6 +23,8 @@ export type WebRtcTestRole = 'sender' | 'recipient';
 
 export type WebRtcTestState = 'idle' | 'negotiating' | 'connected' | 'failed' | 'closed';
 
+export type WebRtcRelayStatus = 'unknown' | 'direct' | 'relay';
+
 export type PeerConnectionFactory = (configuration?: RTCConfiguration) => RTCPeerConnection;
 
 export type WebRtcTestSessionOptions = {
@@ -33,6 +35,7 @@ export type WebRtcTestSessionOptions = {
     rtcConfiguration?: RTCConfiguration;
     onStateChange?: (state: WebRtcTestState) => void;
     onDataChannel?: (channel: RTCDataChannel) => void;
+    onRelayStatusChange?: (status: WebRtcRelayStatus) => void;
     signingKey?: CryptoKey;
     peerSigningPublicKey?: CryptoKey | Uint8Array;
     accountEpoch?: number;
@@ -46,6 +49,7 @@ export class WebRtcTestSession {
     private readonly sendSignal: WebRtcTestSessionOptions['sendSignal'];
     private readonly onStateChange?: (state: WebRtcTestState) => void;
     private readonly onDataChannel?: (channel: RTCDataChannel) => void;
+    private readonly onRelayStatusChange?: (status: WebRtcRelayStatus) => void;
     private readonly signingKey?: CryptoKey;
     private readonly peerSigningPublicKey?: CryptoKey | Uint8Array;
     private readonly accountEpoch?: number;
@@ -58,6 +62,7 @@ export class WebRtcTestSession {
     private handshakeOffer: SignedHandshakeOffer | null = null;
     private handshakeEphemeralPrivateKey: CryptoKey | null = null;
     private materialValue: DerivedHandshakeMaterial | null = null;
+    private relayStatusValue: WebRtcRelayStatus = 'unknown';
 
     constructor(options: WebRtcTestSessionOptions) {
         this.transfer = options.transfer;
@@ -65,6 +70,7 @@ export class WebRtcTestSession {
         this.sendSignal = options.sendSignal;
         this.onStateChange = options.onStateChange;
         this.onDataChannel = options.onDataChannel;
+        this.onRelayStatusChange = options.onRelayStatusChange;
         this.signingKey = options.signingKey;
         this.peerSigningPublicKey = options.peerSigningPublicKey;
         this.accountEpoch = options.accountEpoch;
@@ -93,6 +99,7 @@ export class WebRtcTestSession {
         this.peerConnection.onconnectionstatechange = () => {
             if (this.peerConnection.connectionState === 'connected') {
                 this.setState('connected');
+                void this.refreshRelayStatus();
             } else if (
                 this.peerConnection.connectionState === 'failed' ||
                 this.peerConnection.connectionState === 'closed'
@@ -110,30 +117,39 @@ export class WebRtcTestSession {
         return this.materialValue;
     }
 
+    get relayStatus(): WebRtcRelayStatus {
+        return this.relayStatusValue;
+    }
+
     async start(): Promise<void> {
         if (this.started || this.stateValue === 'closed') {
             return;
         }
         this.started = true;
         this.setState('negotiating');
-        if (this.role !== 'sender') {
-            return;
-        }
+        try {
+            if (this.role !== 'sender') {
+                return;
+            }
 
-        if (!this.signingKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
-            throw new Error('Authenticated handshake material is required.');
+            if (!this.signingKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
+                throw new Error('Authenticated handshake material is required.');
+            }
+            const offer = await createHandshakeOffer({
+                transferId: this.transfer.transfer_id,
+                accountEpoch: this.accountEpoch,
+                senderDeviceId: this.transfer.sender_device_id,
+                recipientDeviceId: this.transfer.recipient_device_id,
+                expiresAt: new Date(this.transfer.expires_at).getTime(),
+                signingKey: this.signingKey,
+            });
+            this.handshakeOffer = offer;
+            this.handshakeEphemeralPrivateKey = offer.ephemeralKeyPair.privateKey;
+            await this.emitSignal(buildHandshakeOfferEnvelope(this.transfer, offer));
+        } catch (error) {
+            this.setState('failed');
+            throw error;
         }
-        const offer = await createHandshakeOffer({
-            transferId: this.transfer.transfer_id,
-            accountEpoch: this.accountEpoch,
-            senderDeviceId: this.transfer.sender_device_id,
-            recipientDeviceId: this.transfer.recipient_device_id,
-            expiresAt: new Date(this.transfer.expires_at).getTime(),
-            signingKey: this.signingKey,
-        });
-        this.handshakeOffer = offer;
-        this.handshakeEphemeralPrivateKey = offer.ephemeralKeyPair.privateKey;
-        await this.emitSignal(buildHandshakeOfferEnvelope(this.transfer, offer));
     }
 
     private async startNegotiation(): Promise<void> {
@@ -303,6 +319,7 @@ export class WebRtcTestSession {
         channel.onopen = () => {
             this.onDataChannel?.(channel);
             this.setState('connected');
+            void this.refreshRelayStatus();
         };
         channel.onerror = () => {
             this.setState('failed');
@@ -327,5 +344,71 @@ export class WebRtcTestSession {
         }
         this.stateValue = state;
         this.onStateChange?.(state);
+    }
+
+    private async refreshRelayStatus(): Promise<void> {
+        if (typeof this.peerConnection.getStats !== 'function') {
+            return;
+        }
+        let stats: RTCStatsReport;
+        try {
+            stats = await this.peerConnection.getStats();
+        } catch {
+            return;
+        }
+        const selectedPair = [...stats.values()].find((value) => {
+            const report = value as {
+                type?: unknown;
+                state?: unknown;
+                selected?: unknown;
+                nominated?: unknown;
+            };
+            return (
+                report.type === 'candidate-pair' &&
+                report.state === 'succeeded' &&
+                (report.selected === true || report.nominated === true)
+            );
+        }) as
+            | {
+                  localCandidateId?: unknown;
+                  remoteCandidateId?: unknown;
+              }
+            | undefined;
+        if (!selectedPair) {
+            return;
+        }
+        const localCandidate = this.candidateStats(stats, selectedPair.localCandidateId);
+        const remoteCandidate = this.candidateStats(stats, selectedPair.remoteCandidateId);
+        if (!localCandidate && !remoteCandidate) {
+            return;
+        }
+        const relayUsed =
+            localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay';
+        this.setRelayStatus(relayUsed ? 'relay' : 'direct');
+    }
+
+    private candidateStats(
+        stats: RTCStatsReport,
+        candidateId: unknown,
+    ): { candidateType?: unknown } | null {
+        if (typeof candidateId !== 'string') {
+            return null;
+        }
+        const value = stats.get(candidateId);
+        if (typeof value !== 'object' || value === null) {
+            return null;
+        }
+        const report = value as { type?: unknown; candidateType?: unknown };
+        return report.type === 'local-candidate' || report.type === 'remote-candidate'
+            ? report
+            : null;
+    }
+
+    private setRelayStatus(status: WebRtcRelayStatus): void {
+        if (status === this.relayStatusValue) {
+            return;
+        }
+        this.relayStatusValue = status;
+        this.onRelayStatusChange?.(status);
     }
 }

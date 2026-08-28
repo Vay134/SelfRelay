@@ -36,6 +36,17 @@ export type TransferPeerDeviceKey = {
     public_key_spki: string;
 };
 
+export type TurnIceServer = {
+    urls: string[];
+    username: string;
+    credential: string;
+};
+
+export type TurnCredentials = {
+    ice_servers: TurnIceServer[];
+    expires_at: number;
+};
+
 export type WebSocketTicket = {
     ticket: string;
     ticket_id: string;
@@ -196,6 +207,69 @@ export function getTransferPeerDeviceKey(transferId: string): Promise<TransferPe
     return apiRequest<TransferPeerDeviceKey>(
         `/auth/transfers/${encodeURIComponent(transferId)}/peer-key`,
     );
+}
+
+function parseTurnCredentials(body: unknown): TurnCredentials {
+    if (typeof body !== 'object' || body === null || !('ice_servers' in body)) {
+        throw new TypeError('The TURN configuration is invalid.');
+    }
+    const candidate = body as {
+        ice_servers?: unknown;
+        expires_at?: unknown;
+    };
+    if (
+        !Array.isArray(candidate.ice_servers) ||
+        candidate.ice_servers.length === 0 ||
+        !Number.isSafeInteger(candidate.expires_at)
+    ) {
+        throw new TypeError('The TURN configuration is invalid.');
+    }
+    const iceServers: TurnIceServer[] = [];
+    for (const value of candidate.ice_servers) {
+        if (typeof value !== 'object' || value === null) {
+            throw new TypeError('The TURN configuration is invalid.');
+        }
+        const server = value as {
+            urls?: unknown;
+            username?: unknown;
+            credential?: unknown;
+        };
+        if (
+            !Array.isArray(server.urls) ||
+            server.urls.length === 0 ||
+            !server.urls.every(
+                (url) =>
+                    typeof url === 'string' &&
+                    /^(?:stun|turn|turns):/u.test(url) &&
+                    url.length <= 2048,
+            ) ||
+            typeof server.username !== 'string' ||
+            server.username.length === 0 ||
+            server.username.length > 512 ||
+            typeof server.credential !== 'string' ||
+            server.credential.length === 0 ||
+            server.credential.length > 4096
+        ) {
+            throw new TypeError('The TURN configuration is invalid.');
+        }
+        iceServers.push({
+            urls: [...server.urls],
+            username: server.username,
+            credential: server.credential,
+        });
+    }
+    return {
+        ice_servers: iceServers,
+        expires_at: candidate.expires_at as number,
+    };
+}
+
+export async function getTransferTurnCredentials(transferId: string): Promise<TurnCredentials> {
+    const body = await apiRequest<unknown>(
+        `/auth/transfers/${encodeURIComponent(transferId)}/turn-credentials`,
+        { method: 'POST' },
+    );
+    return parseTurnCredentials(body);
 }
 
 export function websocketUrl(ticket: string): string {

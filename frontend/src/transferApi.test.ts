@@ -6,6 +6,7 @@ import {
     buildSdpAnswerEnvelope,
     buildSdpOfferEnvelope,
     getTransferPeerDeviceKey,
+    getTransferTurnCredentials,
     issueWebSocketTicket,
     websocketUrl,
     type TransferRequest,
@@ -71,6 +72,43 @@ describe('transfer API boundaries', () => {
         const ticketRequest = fetchMock.mock.calls[1]?.[1];
         expect(new Headers(ticketRequest?.headers).get('X-CSRF-Token')).toBe('csrf-token');
         expect(ticketRequest?.credentials).toBe('include');
+    });
+
+    it('fetches the authenticated TURN configuration for an accepted transfer', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    ice_servers: [
+                        {
+                            urls: [
+                                'stun:turn.test.invalid',
+                                'turn:turn.test.invalid?transport=udp',
+                            ],
+                            username: 'turn-user',
+                            credential: 'turn-credential',
+                        },
+                    ],
+                    expires_at: 1_700_000_120_000,
+                }),
+                { status: 200 },
+            ),
+        );
+
+        await expect(getTransferTurnCredentials(transfer.transfer_id)).resolves.toEqual({
+            ice_servers: [
+                {
+                    urls: ['stun:turn.test.invalid', 'turn:turn.test.invalid?transport=udp'],
+                    username: 'turn-user',
+                    credential: 'turn-credential',
+                },
+            ],
+            expires_at: 1_700_000_120_000,
+        });
+        expect(fetchMock.mock.calls[0]?.[0]).toBe(
+            `http://localhost:8000/auth/transfers/${transfer.transfer_id}/turn-credentials`,
+        );
+        expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('POST');
+        expect(fetchMock.mock.calls[0]?.[1]?.credentials).toBe('include');
     });
 
     it('builds bounded signaling envelopes with integer expiry fields', () => {

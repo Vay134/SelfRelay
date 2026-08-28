@@ -6,6 +6,7 @@ import {
     type SignalingEnvelope,
     type TransferRequest,
 } from './transferApi';
+import { generateP256SigningKeyPair } from './transferProtocol';
 import { WebRtcTestSession } from './webrtcTestSession';
 
 const transfer: TransferRequest = {
@@ -44,6 +45,7 @@ class FakePeerConnection {
     readonly addedCandidates: RTCIceCandidateInit[] = [];
     readonly channels: FakeDataChannel[] = [];
     readonly setRemoteDescriptionMock = vi.fn();
+    readonly stats = new Map<string, object>();
 
     createDataChannel(label: string): RTCDataChannel {
         const channel = new FakeDataChannel(label);
@@ -71,6 +73,10 @@ class FakePeerConnection {
         this.addedCandidates.push(candidate);
     }
 
+    async getStats(): Promise<RTCStatsReport> {
+        return this.stats as unknown as RTCStatsReport;
+    }
+
     close(): void {
         this.connectionState = 'closed';
         this.onconnectionstatechange?.();
@@ -94,35 +100,39 @@ function fakeFactory(connection: FakePeerConnection) {
 }
 
 describe('WebRtcTestSession', () => {
-    it('creates a sender data channel and sends the documented SDP offer envelope', async () => {
+    it('creates an authenticated sender handshake offer', async () => {
         const connection = new FakePeerConnection();
         const signals: SignalingEnvelope[] = [];
+        const signingKeyPair = await generateP256SigningKeyPair(true);
+        const senderTransfer: TransferRequest = {
+            ...transfer,
+            expires_at: new Date(Date.now() + 60_000).toISOString(),
+        };
         const session = new WebRtcTestSession({
-            transfer,
+            transfer: senderTransfer,
             role: 'sender',
             peerConnectionFactory: fakeFactory(connection),
             sendSignal: (message) => {
                 signals.push(message);
             },
+            signingKey: signingKeyPair.privateKey,
+            peerSigningPublicKey: signingKeyPair.publicKey,
+            accountEpoch: 0,
         });
 
         await session.start();
 
-        expect(connection.channels[0]?.label).toBe('secure-transfer-test');
         expect(signals).toHaveLength(1);
         expect(signals[0]).toEqual(
             expect.objectContaining({
-                type: 'sdp_offer',
+                type: 'handshake_offer',
                 v: 1,
                 transfer_id: transfer.transfer_id,
                 sender_device_id: transfer.sender_device_id,
                 recipient_device_id: transfer.recipient_device_id,
-                sdp: 'v=0\r\no=sender',
             }),
         );
-
-        connection.openChannel();
-        expect(session.state).toBe('connected');
+        expect(connection.channels).toHaveLength(0);
     });
 
     it('queues ICE until the remote description, then answers an SDP offer', async () => {
@@ -181,5 +191,35 @@ describe('WebRtcTestSession', () => {
 
         expect(received).toBe(channel);
         expect(session.state).toBe('connected');
+    });
+
+    it('reports the selected ICE pair as relayed without exposing candidate details', async () => {
+        const connection = new FakePeerConnection();
+        connection.stats.set('pair', {
+            type: 'candidate-pair',
+            state: 'succeeded',
+            selected: true,
+            localCandidateId: 'local',
+            remoteCandidateId: 'remote',
+        });
+        connection.stats.set('local', { type: 'local-candidate', candidateType: 'relay' });
+        connection.stats.set('remote', { type: 'remote-candidate', candidateType: 'srflx' });
+        const relayStatuses: string[] = [];
+        const session = new WebRtcTestSession({
+            transfer,
+            role: 'recipient',
+            peerConnectionFactory: fakeFactory(connection),
+            sendSignal: () => undefined,
+            onRelayStatusChange: (status) => relayStatuses.push(status),
+        });
+        const channel = new FakeDataChannel('secure-transfer-test');
+
+        connection.receiveChannel(channel);
+        channel.readyState = 'open';
+        channel.onopen?.();
+        await Promise.resolve();
+
+        expect(session.relayStatus).toBe('relay');
+        expect(relayStatuses).toEqual(['relay']);
     });
 });
