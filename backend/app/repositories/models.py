@@ -89,6 +89,7 @@ class PairingRequestRecord:
     created_at: datetime
     expires_at: datetime
     consumed_at: datetime | None
+    approval_nonce: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +232,7 @@ def pairing_request_from_row(row: Mapping[str, object]) -> PairingRequestRecord:
         created_at=cast(datetime, row["created_at"]),
         expires_at=cast(datetime, row["expires_at"]),
         consumed_at=cast(datetime | None, row["consumed_at"]),
+        approval_nonce=cast(bytes | None, row.get("approval_nonce")),
     )
 
 

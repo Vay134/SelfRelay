@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import secrets
 from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from cryptography.hazmat.primitives import hashes
@@ -21,6 +22,7 @@ from app.device_crypto import (
     fingerprint_public_key,
     pairing_approval_message,
     pairing_approval_payload,
+    pairing_enrollment_message,
     signed_message,
 )
 from app.pairings import PAIRING_REQUEST_MESSAGE
@@ -89,6 +91,18 @@ def _sign_pairing(
 ) -> str:
     der_signature = private_key.sign(
         pairing_approval_message(payload),
+        ec.ECDSA(hashes.SHA256()),
+    )
+    r, s = decode_dss_signature(der_signature)
+    return _b64(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+
+
+def _sign_enrollment(
+    private_key: ec.EllipticCurvePrivateKey,
+    payload: dict[str, object],
+) -> str:
+    der_signature = private_key.sign(
+        pairing_enrollment_message(payload),
         ec.ECDSA(hashes.SHA256()),
     )
     r, s = decode_dss_signature(der_signature)
@@ -281,6 +295,50 @@ def awaitable_get_device(
     import asyncio
 
     return asyncio.run(repository.get_by_id(account_id, UUID(device_id)))
+
+
+def _approve_request(
+    client: TestClient,
+    registered: dict[str, object],
+    approving_private_key: ec.EllipticCurvePrivateKey,
+    email: str,
+    created_body: dict[str, object],
+) -> None:
+    account_id = UUID(cast(str, registered["account_id"]))
+    account = awaitable_get_account(main.app.state.auth_service, email)
+    device_body = cast(dict[str, object], registered["device"])
+    device = awaitable_get_device(
+        main.app.state.device_repository,
+        account_id,
+        cast(str, device_body["device_id"]),
+    )
+    assert device is not None
+    record = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, created_body["request_id"]),
+    )
+    assert record is not None
+    approval_nonce = secrets.token_bytes(32)
+    approval_payload = pairing_approval_payload(
+        record,
+        account,
+        device,
+        approval_nonce=approval_nonce,
+    )
+    approved = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/approve",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+        json={
+            "comparison_code": created_body["comparison_code"],
+            "approval_nonce": _b64(approval_nonce),
+            "signature": _sign_pairing(approving_private_key, approval_payload),
+        },
+    )
+    assert approved.status_code == 200
 
 
 def test_trusted_device_lists_and_approves_exact_requested_key(client: TestClient) -> None:
@@ -487,3 +545,233 @@ def test_rejected_pairing_is_terminal_and_requires_csrf(client: TestClient) -> N
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
     assert client.get("/auth/pairing/requests").json() == {"requests": []}
+
+
+def test_approved_pairing_proves_exact_key_issues_session_and_is_one_time(
+    client: TestClient,
+) -> None:
+    approving_private_key, approving_public_key = _new_key()
+    registered = _register(
+        client,
+        "enrollment-owner@example.test",
+        private_key=approving_private_key,
+        public_key=approving_public_key,
+    )
+    requested_private_key, requested_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "enrollment-owner@example.test",
+            "public_key": _b64(requested_public_key),
+            "label": "New browser",
+        },
+    )
+    assert created.status_code == 202
+    created_body = cast(dict[str, object], created.json())
+    _approve_request(
+        client,
+        registered,
+        approving_private_key,
+        "enrollment-owner@example.test",
+        created_body,
+    )
+
+    status_response = client.get(
+        f"/auth/pairing/requests/{created_body['request_id']}",
+        headers={"Origin": APP_ORIGIN},
+    )
+    assert status_response.status_code == 200
+    status_body = cast(dict[str, object], status_response.json())
+    assert status_body["status"] == "approved"
+    enrollment_payload = cast(dict[str, object], status_body["payload"])
+    enrollment_signature = _sign_enrollment(requested_private_key, enrollment_payload)
+    completed = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "account_id": status_body["account_id"],
+            "public_key": _b64(requested_public_key),
+            "fingerprint": _b64(fingerprint_public_key(requested_public_key)),
+            "request_nonce": status_body["request_nonce"],
+            "approval_nonce": status_body["approval_nonce"],
+            "signature": enrollment_signature,
+        },
+    )
+    assert completed.status_code == 200
+    assert completed.json()["authenticated"] is True
+    assert completed.json()["device"]["fingerprint"] == _b64(
+        fingerprint_public_key(requested_public_key)
+    )
+    assert completed.json()["device"]["approved_by_device_id"]
+    devices = client.get("/auth/devices", headers={"Origin": APP_ORIGIN})
+    assert devices.status_code == 200
+    assert len(devices.json()["devices"]) == 2
+
+    replay = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "account_id": status_body["account_id"],
+            "public_key": _b64(requested_public_key),
+            "signature": enrollment_signature,
+        },
+    )
+    assert replay.status_code == 401
+    assert len(client.get("/auth/devices", headers={"Origin": APP_ORIGIN}).json()["devices"]) == 2
+
+
+def test_pairing_enrollment_rejects_substituted_key_and_invalid_proof_without_session(
+    client: TestClient,
+) -> None:
+    approving_private_key, approving_public_key = _new_key()
+    registered = _register(
+        client,
+        "enrollment-substitution@example.test",
+        private_key=approving_private_key,
+        public_key=approving_public_key,
+    )
+    old_cookie = client.cookies.get(SESSION_COOKIE_NAME)
+    requested_private_key, requested_public_key = _new_key()
+    _, substituted_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "enrollment-substitution@example.test",
+            "public_key": _b64(requested_public_key),
+        },
+    )
+    created_body = cast(dict[str, object], created.json())
+    _approve_request(
+        client,
+        registered,
+        approving_private_key,
+        "enrollment-substitution@example.test",
+        created_body,
+    )
+    status_body = cast(
+        dict[str, object],
+        client.get(
+            f"/auth/pairing/requests/{created_body['request_id']}",
+            headers={"Origin": APP_ORIGIN},
+        ).json(),
+    )
+    payload = cast(dict[str, object], status_body["payload"])
+    invalid = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "account_id": status_body["account_id"],
+            "public_key": _b64(substituted_public_key),
+            "signature": _sign_enrollment(requested_private_key, payload),
+        },
+    )
+    assert invalid.status_code == 401
+    assert client.cookies.get(SESSION_COOKIE_NAME) == old_cookie
+    assert len(client.get("/auth/devices", headers={"Origin": APP_ORIGIN}).json()["devices"]) == 1
+
+    bad_proof = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "account_id": status_body["account_id"],
+            "public_key": _b64(requested_public_key),
+            "signature": _b64(b"x" * 64),
+        },
+    )
+    assert bad_proof.status_code == 401
+    assert len(client.get("/auth/devices", headers={"Origin": APP_ORIGIN}).json()["devices"]) == 1
+
+
+def test_pairing_enrollment_rejects_cross_account_rejected_and_expired_requests(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approving_private_key, approving_public_key = _new_key()
+    registered = _register(
+        client,
+        "enrollment-lifecycle@example.test",
+        private_key=approving_private_key,
+        public_key=approving_public_key,
+    )
+    requested_private_key, requested_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "enrollment-lifecycle@example.test",
+            "public_key": _b64(requested_public_key),
+        },
+    )
+    created_body = cast(dict[str, object], created.json())
+    _approve_request(
+        client,
+        registered,
+        approving_private_key,
+        "enrollment-lifecycle@example.test",
+        created_body,
+    )
+    status_body = cast(
+        dict[str, object],
+        client.get(
+            f"/auth/pairing/requests/{created_body['request_id']}",
+            headers={"Origin": APP_ORIGIN},
+        ).json(),
+    )
+    payload = cast(dict[str, object], status_body["payload"])
+    cross_account = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "account_id": str(uuid4()),
+            "signature": _sign_enrollment(requested_private_key, payload),
+        },
+    )
+    assert cross_account.status_code == 401
+    assert len(client.get("/auth/devices", headers={"Origin": APP_ORIGIN}).json()["devices"]) == 1
+
+    expiry_service = main.app.state.pairing_enrollment_service
+    monkeypatch.setattr(
+        expiry_service,
+        "_clock",
+        lambda: datetime.now(UTC) + timedelta(minutes=11),
+    )
+    expired = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "account_id": status_body["account_id"],
+            "signature": _sign_enrollment(requested_private_key, payload),
+        },
+    )
+    assert expired.status_code == 401
+    assert len(client.get("/auth/devices", headers={"Origin": APP_ORIGIN}).json()["devices"]) == 1
+
+    # A separate pending request is rejected before it can ever expose an enrollment payload.
+    monkeypatch.setattr(expiry_service, "_clock", lambda: datetime.now(UTC))
+    _, rejected_public_key = _new_key()
+    rejected_created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "enrollment-lifecycle@example.test",
+            "public_key": _b64(rejected_public_key),
+        },
+    )
+    rejected_body = cast(dict[str, object], rejected_created.json())
+    rejected = client.post(
+        f"/auth/pairing/requests/{rejected_body['request_id']}/reject",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+    )
+    assert rejected.status_code == 200
+    rejected_completion = client.post(
+        f"/auth/pairing/requests/{rejected_body['request_id']}/complete",
+        headers={"Origin": APP_ORIGIN},
+        json={"signature": _b64(b"x" * 64)},
+    )
+    assert rejected_completion.status_code == 401
+    assert len(client.get("/auth/devices", headers={"Origin": APP_ORIGIN}).json()["devices"]) == 1

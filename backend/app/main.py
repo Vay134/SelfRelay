@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from fastapi import FastAPI
 
@@ -16,7 +17,12 @@ from app.database import Database
 from app.device_auth import DeviceAuthService
 from app.device_auth import router as device_router
 from app.logging import configure_logging
-from app.pairings import PairingApprovalService, PairingRequestService
+from app.pairings import (
+    PairingApprovalService,
+    PairingApprovalStore,
+    PairingEnrollmentService,
+    PairingRequestService,
+)
 from app.pairings import router as pairing_router
 from app.repositories import (
     AccountRepository,
@@ -80,7 +86,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         else DeviceChallengeRepository(database)
     )
     pairing_repository = (
-        InMemoryPairingRequestRepository()
+        InMemoryPairingRequestRepository(device_repository, session_repository)
         if settings.app_env == "test"
         else PairingRequestRepository(database)
     )
@@ -109,7 +115,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.pairing_approval_service = PairingApprovalService(
         account_store,
         device_repository,
-        pairing_repository,
+        cast(PairingApprovalStore, pairing_repository),
+    )
+    application.state.pairing_enrollment_service = PairingEnrollmentService(
+        account_store,
+        device_repository,
+        cast(PairingApprovalStore, pairing_repository),
+        session_service,
     )
     application.state.device_auth_service = device_auth_service
     try:

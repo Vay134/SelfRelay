@@ -380,6 +380,16 @@ class InMemoryDeviceRepository:
             self._records[record.id] = record
         return record
 
+    async def remove(self, account_id: UUID, device_id: UUID) -> bool:
+        """Remove a just-created test device during a failed compound operation."""
+
+        with self._lock:
+            record = self._records.get(device_id)
+            if record is None or record.user_id != account_id:
+                return False
+            del self._records[device_id]
+            return True
+
     async def touch_last_seen(
         self,
         account_id: UUID,

@@ -168,6 +168,26 @@ class SessionService:
     def __init__(self, repository: SessionRepositoryPort) -> None:
         self._repository = repository
 
+    def prepare(
+        self,
+        *,
+        created_at: datetime | None = None,
+        absolute_expires_at: datetime | None = None,
+    ) -> tuple[SessionSecrets, datetime, datetime]:
+        """Prepare session secrets and expiry values for a larger transaction."""
+
+        issued_at = _utc_now(created_at)
+        idle_expires_at, default_absolute = session_expiry(issued_at)
+        absolute_expiry = (
+            default_absolute if absolute_expires_at is None else _utc_now(absolute_expires_at)
+        )
+        if absolute_expiry <= issued_at:
+            raise ValueError("session absolute expiry must be in the future")
+        idle_expires_at = min(idle_expires_at, absolute_expiry)
+        if idle_expires_at <= issued_at:
+            raise ValueError("session idle expiry must be in the future")
+        return _session_secrets(), idle_expires_at, absolute_expiry
+
     async def create(
         self,
         account_id: UUID,
@@ -182,17 +202,10 @@ class SessionService:
         if not isinstance(device_id, UUID):
             raise ValueError("a session requires a device identifier")
         issued_at = _utc_now(created_at)
-        idle_expires_at, default_absolute = session_expiry(issued_at)
-        absolute_expiry = (
-            default_absolute if absolute_expires_at is None else _utc_now(absolute_expires_at)
+        secrets_for_session, idle_expires_at, absolute_expiry = self.prepare(
+            created_at=issued_at,
+            absolute_expires_at=absolute_expires_at,
         )
-        if absolute_expiry <= issued_at:
-            raise ValueError("session absolute expiry must be in the future")
-        idle_expires_at = min(idle_expires_at, absolute_expiry)
-        if idle_expires_at <= issued_at:
-            raise ValueError("session idle expiry must be in the future")
-
-        secrets_for_session = _session_secrets()
         record = await self._repository.create(
             account_id,
             device_id,
@@ -292,6 +305,17 @@ class InMemorySessionRepository:
             self._records[record.id] = record
             self._by_token_hash[record.token_hash] = record.id
         return record
+
+    async def remove(self, account_id: UUID, session_id: UUID) -> bool:
+        """Remove a just-created test session during a failed compound operation."""
+
+        with self._lock:
+            record = self._records.get(session_id)
+            if record is None or record.user_id != account_id:
+                return False
+            del self._records[session_id]
+            self._by_token_hash.pop(record.token_hash, None)
+            return True
 
     async def find_by_token_hash(self, token_hash: bytes) -> SessionRecord | None:
         current = datetime.now(UTC)
