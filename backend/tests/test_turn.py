@@ -13,12 +13,18 @@ from fastapi import Response
 from fastapi.testclient import TestClient
 
 from app import main
-from app.adapters import FakeTurnCredentialProvider
+from app.adapters import (
+    FakeTurnCredentialProvider,
+    TurnCredentialProviderError,
+    TurnCredentialRequest,
+    TurnCredentials,
+)
 from app.config import load_settings
 from app.repositories.models import DeviceRecord, TransferRequestRecord
 from app.sessions import SESSION_COOKIE_NAME, CreatedSession
 from app.turn import (
     TURN_CREDENTIAL_TTL_SECONDS,
+    TURN_PROVIDER_UNAVAILABLE_MESSAGE,
     TURN_RATE_LIMIT_MESSAGE,
     TURN_UNAVAILABLE_MESSAGE,
 )
@@ -227,3 +233,25 @@ def test_turn_credential_issuance_is_rate_limited_per_transfer(client: TestClien
     assert limited.status_code == 429
     assert limited.json() == {"detail": TURN_RATE_LIMIT_MESSAGE}
     assert len(provider.requests) == 6
+
+
+def test_turn_provider_outage_returns_a_terminal_error_without_provider_detail(
+    client: TestClient,
+) -> None:
+    account_id = uuid4()
+    sender = _create_device(client, account_id)
+    recipient = _create_device(client, account_id)
+    session = _issue_session(client, account_id, sender.id)
+    transfer_id = _create_transfer(account_id, sender.id, recipient.id, accepted=True)
+
+    class OutageProvider:
+        async def issue_credentials(self, request: TurnCredentialRequest) -> TurnCredentials:
+            raise TurnCredentialProviderError("cloudflare token cf-secret-token rejected")
+
+    main.app.state.turn_credential_service._provider = OutageProvider()
+
+    response = _issue(client, transfer_id, session.csrf_secret)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": TURN_PROVIDER_UNAVAILABLE_MESSAGE}
+    assert "cf-secret-token" not in response.text
