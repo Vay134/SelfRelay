@@ -28,6 +28,8 @@ def test_load_settings_returns_typed_values() -> None:
     assert settings.log_level == "DEBUG"
     assert settings.auth_adapter == "fake"
     assert settings.turn_adapter == "fake"
+    assert settings.cloudflare_turn_key_id is None
+    assert settings.cloudflare_turn_api_token is None
 
 
 @pytest.mark.parametrize("value", ["", "staging", "prod", "developmental"])
@@ -97,9 +99,35 @@ def test_real_adapters_are_allowed_in_production() -> None:
             APP_ENV="production",
             AUTH_ADAPTER="supabase",
             TURN_ADAPTER="cloudflare",
+            CLOUDFLARE_TURN_KEY_ID="turn-key-id",
+            CLOUDFLARE_TURN_API_TOKEN="turn-api-token",
         )
     )
 
     assert settings.app_env == "production"
     assert settings.auth_adapter == "supabase"
     assert settings.turn_adapter == "cloudflare"
+    assert settings.cloudflare_turn_key_id == "turn-key-id"
+    assert settings.cloudflare_turn_api_token == "turn-api-token"
+
+
+@pytest.mark.parametrize("name", ["CLOUDFLARE_TURN_KEY_ID", "CLOUDFLARE_TURN_API_TOKEN"])
+def test_cloudflare_turn_adapter_requires_server_credentials(name: str) -> None:
+    provided = {
+        "CLOUDFLARE_TURN_KEY_ID": "turn-key-id",
+        "CLOUDFLARE_TURN_API_TOKEN": "turn-api-token",
+    }
+    provided.pop(name)
+    with pytest.raises(ConfigurationError, match=name):
+        load_settings(_environment(TURN_ADAPTER="cloudflare", **provided))
+
+
+def test_cloudflare_turn_secret_values_must_not_be_empty() -> None:
+    with pytest.raises(ConfigurationError, match="CLOUDFLARE_TURN_API_TOKEN"):
+        load_settings(
+            _environment(
+                TURN_ADAPTER="cloudflare",
+                CLOUDFLARE_TURN_KEY_ID="turn-key-id",
+                CLOUDFLARE_TURN_API_TOKEN=" ",
+            )
+        )

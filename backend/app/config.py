@@ -95,6 +95,18 @@ def _database_url(environ: Mapping[str, str]) -> str:
     return value
 
 
+def _turn_secret(environ: Mapping[str, str], name: str, *, required: bool) -> str | None:
+    raw_value = environ.get(name)
+    if raw_value is None:
+        if required:
+            raise ConfigurationError(f"{name} must be configured when TURN_ADAPTER is cloudflare")
+        return None
+    value = raw_value.strip()
+    if not value:
+        raise ConfigurationError(f"{name} must not be empty")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Validated runtime settings for the application."""
@@ -107,6 +119,8 @@ class Settings:
     auth_adapter: AuthAdapter
     turn_adapter: TurnAdapter
     rate_limit_secret: str = _DEFAULT_RATE_LIMIT_SECRET
+    cloudflare_turn_key_id: str | None = None
+    cloudflare_turn_api_token: str | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
@@ -141,6 +155,16 @@ class Settings:
             lower=True,
         )
         rate_limit_secret = _value(source, "RATE_LIMIT_SECRET", _DEFAULT_RATE_LIMIT_SECRET)
+        cloudflare_turn_key_id = _turn_secret(
+            source,
+            "CLOUDFLARE_TURN_KEY_ID",
+            required=turn_adapter == "cloudflare",
+        )
+        cloudflare_turn_api_token = _turn_secret(
+            source,
+            "CLOUDFLARE_TURN_API_TOKEN",
+            required=turn_adapter == "cloudflare",
+        )
         if app_env == "production" and (auth_adapter == "fake" or turn_adapter == "fake"):
             raise ConfigurationError("fake adapters are not allowed when APP_ENV is production")
         return cls(
@@ -152,6 +176,8 @@ class Settings:
             auth_adapter=cast(AuthAdapter, auth_adapter),
             turn_adapter=cast(TurnAdapter, turn_adapter),
             rate_limit_secret=rate_limit_secret,
+            cloudflare_turn_key_id=cloudflare_turn_key_id,
+            cloudflare_turn_api_token=cloudflare_turn_api_token,
         )
 
 
