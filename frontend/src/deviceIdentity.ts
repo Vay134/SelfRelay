@@ -14,6 +14,10 @@ export const DEVICE_STORE_KEY = 'current';
 export const DEVICE_PROTOCOL_VERSION = 1;
 export const DEVICE_CHALLENGE_VERSION = 1;
 export const DEVICE_AUTH_DOMAIN = 'e2e-secure-file-transfer/device-auth/v1\u0000';
+export const PAIRING_APPROVAL_VERSION = 1;
+export const PAIRING_ENROLLMENT_VERSION = 1;
+export const PAIRING_APPROVAL_DOMAIN = 'e2e-secure-file-transfer/pairing-approval/v1\u0000';
+export const PAIRING_ENROLLMENT_DOMAIN = 'e2e-secure-file-transfer/pairing-enrollment/v1\u0000';
 
 export type DeviceIdentity = {
     deviceId: string;
@@ -190,11 +194,18 @@ export function canonicalJsonBytes(value: unknown): Uint8Array {
 }
 
 export function signedChallengeBytes(payload: unknown): Uint8Array {
-    const domain = new TextEncoder().encode(DEVICE_AUTH_DOMAIN);
+    return signedDomainPayloadBytes(DEVICE_AUTH_DOMAIN, payload);
+}
+
+export function signedDomainPayloadBytes(domain: string, payload: unknown): Uint8Array {
+    if (!domain || domain.includes('\u0000') === false) {
+        throw new TypeError('A domain separator is required.');
+    }
+    const domainBytes = new TextEncoder().encode(domain);
     const body = canonicalJsonBytes(payload);
-    const result = new Uint8Array(domain.byteLength + body.byteLength);
-    result.set(domain);
-    result.set(body, domain.byteLength);
+    const result = new Uint8Array(domainBytes.byteLength + body.byteLength);
+    result.set(domainBytes);
+    result.set(body, domainBytes.byteLength);
     return result;
 }
 
@@ -272,10 +283,18 @@ export async function clearDeviceIdentity(): Promise<void> {
 }
 
 export async function signPayload(identity: DeviceIdentity, payload: unknown): Promise<Uint8Array> {
+    return signDomainPayloadBytes(identity, DEVICE_AUTH_DOMAIN, payload);
+}
+
+async function signDomainPayloadBytes(
+    identity: DeviceIdentity,
+    domain: string,
+    payload: unknown,
+): Promise<Uint8Array> {
     const signature = await browserCrypto().subtle.sign(
         { name: 'ECDSA', hash: 'SHA-256' },
         identity.privateKey,
-        signedChallengeBytes(payload) as BufferSource,
+        signedDomainPayloadBytes(domain, payload) as BufferSource,
     );
     const bytes = copyBytes(signature);
     if (bytes.byteLength !== 64) {
@@ -284,6 +303,24 @@ export async function signPayload(identity: DeviceIdentity, payload: unknown): P
         );
     }
     return bytes;
+}
+
+export async function signPairingApproval(
+    identity: DeviceIdentity,
+    payload: unknown,
+): Promise<string> {
+    return encodeBase64Url(
+        await signDomainPayloadBytes(identity, PAIRING_APPROVAL_DOMAIN, payload),
+    );
+}
+
+export async function signPairingEnrollment(
+    identity: DeviceIdentity,
+    payload: unknown,
+): Promise<string> {
+    return encodeBase64Url(
+        await signDomainPayloadBytes(identity, PAIRING_ENROLLMENT_DOMAIN, payload),
+    );
 }
 
 export async function signChallenge(identity: DeviceIdentity, payload: unknown): Promise<string> {

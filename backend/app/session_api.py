@@ -282,7 +282,14 @@ async def current_session(
         session.id,
     )
     public = public_session(updated)
-    return {**public, "authenticated": True, "csrf_token": csrf_secret, "session": public}
+    return {
+        **public,
+        "authenticated": True,
+        "account_id": str(updated.user_id),
+        "account_device_epoch": updated.epoch,
+        "csrf_token": csrf_secret,
+        "session": public,
+    }
 
 
 @router.post("/session/logout", dependencies=[Depends(require_session_csrf)])
