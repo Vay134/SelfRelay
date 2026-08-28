@@ -4,7 +4,7 @@ from typing import cast
 
 from fastapi import FastAPI
 
-from app.adapters import create_auth_gateway
+from app.adapters import create_auth_gateway, create_turn_credential_provider
 from app.auth import (
     InMemoryAccountStore,
     OtpBootstrapService,
@@ -50,6 +50,8 @@ from app.session_api import router as session_router
 from app.sessions import InMemorySessionRepository, SessionService
 from app.transfers import TransferService
 from app.transfers import router as transfer_router
+from app.turn import TurnCredentialService
+from app.turn import router as turn_router
 
 configure_logging()
 
@@ -58,6 +60,12 @@ configure_logging()
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     auth_gateway = create_auth_gateway(settings.app_env, settings.auth_adapter)
+    turn_credential_provider = create_turn_credential_provider(
+        settings.app_env,
+        settings.turn_adapter,
+        turn_key_id=settings.cloudflare_turn_key_id,
+        api_token=settings.cloudflare_turn_api_token,
+    )
     database = Database(settings.database_url)
     await database.connect()
     application.state.database = database
@@ -139,10 +147,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.websocket_ticket_service = WebSocketTicketService(websocket_ticket_repository)
     application.state.presence_manager = presence_manager
     application.state.transfer_repository = transfer_repository
-    application.state.transfer_service = TransferService(
+    transfer_service = TransferService(
         transfer_repository,
         presence_manager,
         device_repository,
+    )
+    application.state.transfer_service = transfer_service
+    application.state.turn_credential_provider = turn_credential_provider
+    application.state.turn_credential_service = TurnCredentialService(
+        turn_credential_provider,
+        transfer_service,
+        device_repository,
+        rate_limiter,
     )
     application.state.device_repository = device_repository
     application.state.device_challenge_repository = challenge_repository
@@ -189,6 +205,7 @@ app.include_router(device_router)
 app.include_router(pairing_router)
 app.include_router(presence_router)
 app.include_router(transfer_router)
+app.include_router(turn_router)
 
 
 @app.get("/health", tags=["system"])
