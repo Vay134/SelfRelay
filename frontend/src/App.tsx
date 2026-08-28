@@ -22,6 +22,7 @@ import {
     getOrCreateDeviceIdentity,
     loadDeviceIdentity,
 } from './deviceIdentity';
+import AccountConsole from './AccountConsole';
 import TransferConsole from './TransferConsole';
 
 const REQUEST_POLL_INTERVAL_MS = 2_000;
@@ -672,7 +673,7 @@ function TrustedDevicePairing() {
 }
 
 function PairingConsole() {
-    const [view, setView] = useState<'new-browser' | 'trusted-device' | 'transfers'>('new-browser');
+    const [view, setView] = useState<'account' | 'new-browser' | 'trusted-device' | 'transfers'>('account');
 
     return (
         <div className="app-frame">
@@ -696,7 +697,16 @@ function PairingConsole() {
                     exact device key. The comparison code is never enough on its own.
                 </p>
             </div>
-            <nav className="view-tabs" aria-label="Pairing mode">
+            <nav className="view-tabs" aria-label="Secure transfer workspace">
+                <button
+                    className={view === 'account' ? 'tab tab-active' : 'tab'}
+                    type="button"
+                    aria-selected={view === 'account'}
+                    onClick={() => setView('account')}
+                >
+                    Account
+                    <span>Access and trusted devices</span>
+                </button>
                 <button
                     className={view === 'new-browser' ? 'tab tab-active' : 'tab'}
                     type="button"
@@ -725,7 +735,9 @@ function PairingConsole() {
                     <span>Presence and connection test</span>
                 </button>
             </nav>
-            {view === 'new-browser' ? (
+            {view === 'account' ? (
+                <AccountConsole />
+            ) : view === 'new-browser' ? (
                 <NewBrowserPairing />
             ) : view === 'trusted-device' ? (
                 <TrustedDevicePairing />

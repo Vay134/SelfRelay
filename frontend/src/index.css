@@ -274,13 +274,332 @@ dd {
     font-size: 1.5rem;
 }
 
+.app-frame {
+    width: min(100%, 68rem);
+}
+
+.app-header,
+.brand-lockup,
+.account-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.app-header {
+    width: min(100%, 52rem);
+    margin: 0 auto 2rem;
+}
+
+.brand-lockup {
+    justify-content: flex-start;
+}
+
+.brand-mark {
+    display: grid;
+    width: 2.5rem;
+    height: 2.5rem;
+    place-items: center;
+    border: 1px solid #65d6ad;
+    border-radius: 0.7rem;
+    color: #65d6ad;
+    font-size: 1.4rem;
+}
+
+.brand-kicker,
+.brand-name,
+.console-intro p,
+.console-footer,
+.account-help,
+.account-id-card p,
+.session-row span {
+    margin: 0;
+    color: #b7cbd6;
+}
+
+.brand-kicker {
+    font-size: 0.7rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+}
+
+.brand-name {
+    margin-top: 0.2rem;
+    color: #e5eef5;
+    font-weight: 700;
+}
+
+.console-intro,
+.view-tabs,
+.account-global-message,
+.account-panel,
+.console-footer {
+    width: min(100%, 52rem);
+    margin-right: auto;
+    margin-left: auto;
+}
+
+.console-intro {
+    margin-bottom: 1.5rem;
+}
+
+.console-intro h1 {
+    max-width: 22ch;
+}
+
+.console-intro p:last-child {
+    max-width: 44rem;
+    margin-top: 1rem;
+    line-height: 1.55;
+}
+
+.view-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.tab {
+    min-height: 4rem;
+    padding: 0.7rem;
+    border: 1px solid #2e5263;
+    border-radius: 0.7rem;
+    color: #b7cbd6;
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+    background: rgb(14 33 44 / 72%);
+    cursor: pointer;
+}
+
+.tab span {
+    display: block;
+    margin-top: 0.35rem;
+    color: #8fa9b7;
+    font-size: 0.75rem;
+    font-weight: 400;
+}
+
+.tab-active {
+    border-color: #65d6ad;
+    color: #e5eef5;
+    box-shadow: inset 0 -2px #65d6ad;
+}
+
+.account-panel {
+    padding: clamp(1.5rem, 5vw, 2.5rem);
+    border: 1px solid #2e5263;
+    border-radius: 1.25rem;
+    background: rgb(14 33 44 / 92%);
+    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 24%);
+}
+
+.account-form {
+    display: grid;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.account-form label,
+.device-rename-form label,
+.account-panel > label {
+    display: grid;
+    gap: 0.4rem;
+    color: #b7cbd6;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.account-form input,
+.device-rename-form input,
+.account-panel > label input {
+    width: 100%;
+    min-height: 2.5rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid #477082;
+    border-radius: 0.55rem;
+    color: #e5eef5;
+    font: inherit;
+    background: #102935;
+}
+
+.account-help {
+    margin-top: 1rem;
+    font-size: 0.9rem;
+}
+
+.account-help button {
+    padding: 0;
+    border: 0;
+    color: #65d6ad;
+    font: inherit;
+    text-decoration: underline;
+    background: transparent;
+    cursor: pointer;
+}
+
+.device-login {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid #2e5263;
+    color: #b7cbd6;
+}
+
+.device-login summary {
+    color: #e5eef5;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.device-login p {
+    line-height: 1.5;
+}
+
+.account-id-card {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 1.5rem;
+    padding: 1rem;
+    border: 1px solid #2e5263;
+    border-radius: 0.75rem;
+    background: rgb(11 23 32 / 45%);
+}
+
+.account-id-card code {
+    overflow-wrap: anywhere;
+    color: #e5eef5;
+}
+
+.account-id-card p {
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+.account-section {
+    margin-top: 1.75rem;
+}
+
+.device-list,
+.session-list {
+    display: grid;
+    gap: 0.8rem;
+}
+
+.device-card {
+    padding: 1rem;
+    border: 1px solid #2e5263;
+    border-radius: 0.85rem;
+    background: rgb(11 23 32 / 45%);
+}
+
+.device-card h3 {
+    margin: 0;
+}
+
+.device-card code {
+    overflow-wrap: anywhere;
+}
+
+.device-rename-form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 0.65rem;
+    margin-top: 1rem;
+}
+
+.device-rename-form + .button-danger {
+    margin-top: 0.75rem;
+}
+
+.session-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.85rem 0;
+    border-bottom: 1px solid #2e5263;
+}
+
+.session-row div {
+    display: grid;
+    gap: 0.25rem;
+}
+
+.session-row span {
+    font-size: 0.85rem;
+}
+
+.request-state-active {
+    color: #9be7cc;
+}
+
+.request-state-revoked,
+.request-state-revoked {
+    color: #f5d7a0;
+}
+
+.dialog-backdrop {
+    position: fixed;
+    z-index: 10;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+    background: rgb(3 10 14 / 76%);
+}
+
+.confirm-dialog {
+    width: min(100%, 30rem);
+    padding: 1.5rem;
+    border: 1px solid #477082;
+    border-radius: 0.9rem;
+    background: #0e212c;
+    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 40%);
+}
+
+.confirm-dialog h2 {
+    margin: 0;
+}
+
+.confirm-dialog > p:not(.section-kicker) {
+    color: #b7cbd6;
+    line-height: 1.5;
+}
+
+.console-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 1rem;
+    font-size: 0.8rem;
+}
+
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+    outline: 3px solid #f5d7a0;
+    outline-offset: 2px;
+}
+
 @media (max-width: 680px) {
+    .view-tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
     .transfer-create {
         grid-template-columns: 1fr;
     }
     .panel-heading-row,
     .trusted-request-heading,
     .transfer-group-heading {
+        flex-direction: column;
+    }
+    .device-rename-form {
+        grid-template-columns: 1fr;
+    }
+    .console-footer {
         flex-direction: column;
     }
 }
