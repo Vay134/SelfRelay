@@ -28,6 +28,7 @@ import {
     type TransferReceipt,
 } from './fileTransfer';
 import { PresenceSocketClient, type PresenceClientStatus } from './presenceClient';
+import { AvailabilityController, type AvailabilityState } from './availability/availability';
 import { decodeBase64Url, importP256Spki, type DerivedHandshakeMaterial } from './transferProtocol';
 import { rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
 import ConfirmationDialog from './ConfirmationDialog';
@@ -95,6 +96,15 @@ function statusLabel(status: PresenceClientStatus): string {
         reconnecting: 'Reconnecting',
         offline: 'Offline · retrying',
         failed: 'Unavailable · try again',
+    }[status];
+}
+
+function availabilityStatusLabel(status: AvailabilityState): string {
+    return {
+        starting: 'Waking service',
+        ready: 'Service ready',
+        degraded: 'Service waking · retrying',
+        failed: 'Service unavailable',
     }[status];
 }
 
@@ -213,6 +223,7 @@ function TransferConsole() {
     const [devices, setDevices] = useState<{ device_id: string; label: string }[]>([]);
     const [transfers, setTransfers] = useState<TransferRequest[]>([]);
     const [state, setState] = useState<TransferConsoleState>('checking');
+    const [availabilityStatus, setAvailabilityStatus] = useState<AvailabilityState>('starting');
     const [socketStatus, setSocketStatus] = useState<PresenceClientStatus>('idle');
     const [connectionStates, setConnectionStates] = useState<Record<string, WebRtcTestState>>({});
     const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -228,6 +239,7 @@ function TransferConsole() {
     const transfersRef = useRef<TransferRequest[]>([]);
     const transferRunsRef = useRef<Record<string, TransferRun>>({});
     const localIdentityPromiseRef = useRef<Promise<DeviceIdentity> | null>(null);
+    const availabilityRef = useRef<AvailabilityController | null>(null);
     const socketRef = useRef<PresenceSocketClient | null>(null);
     const sessionsRef = useRef<Map<string, WebRtcTestSession>>(new Map());
     const sessionContextsRef = useRef<Map<string, TransferSessionContext>>(new Map());
@@ -705,6 +717,31 @@ function TransferConsole() {
         const cancelledTransfers = cancelledTransfersRef.current;
         const queuedSignals = queuedSignalsRef.current;
         const initialize = async () => {
+            const availability = new AvailabilityController({
+                onStateChange: (nextStatus) => {
+                    if (mounted) {
+                        setAvailabilityStatus(nextStatus);
+                    }
+                },
+            });
+            availabilityRef.current = availability;
+            try {
+                await availability.start();
+            } catch (availabilityError) {
+                if (mounted) {
+                    setAvailabilityStatus('failed');
+                    setError(
+                        availabilityError instanceof Error
+                            ? availabilityError.message
+                            : 'The secure transfer service is temporarily unavailable.',
+                    );
+                    setState('error');
+                }
+                return;
+            }
+            if (!mounted) {
+                return;
+            }
             await refresh();
             if (!mounted || !sessionRef.current) {
                 return;
@@ -730,6 +767,8 @@ function TransferConsole() {
         void initialize();
         return () => {
             mounted = false;
+            availabilityRef.current?.dispose();
+            availabilityRef.current = null;
             socketRef.current?.stop();
             socketRef.current = null;
             for (const engine of sessionContexts.values()) {
@@ -961,7 +1000,11 @@ function TransferConsole() {
             >
                 <p className="section-kicker">Secure transfer</p>
                 <h2 id="transfer-title">Checking your trusted session…</h2>
-                <p className="empty-copy">Looking for online devices on this account.</p>
+                <p className="empty-copy" data-testid="availability-status" role="status">
+                    {availabilityStatus === 'degraded'
+                        ? 'The service is taking longer than expected. Retrying before connecting.'
+                        : 'Waking the secure transfer service before looking for online devices.'}
+                </p>
             </section>
         );
     }
@@ -1000,10 +1043,23 @@ function TransferConsole() {
                             file for the encrypted peer-to-peer transfer.
                         </p>
                     </div>
-                    <span className={`request-state request-state-${socketStatus}`} role="status">
-                        <span className="status-dot" aria-hidden="true" />
-                        {statusLabel(socketStatus)}
-                    </span>
+                    <div>
+                        <span
+                            className={`request-state request-state-${availabilityStatus}`}
+                            data-testid="availability-status"
+                            role="status"
+                        >
+                            <span className="status-dot" aria-hidden="true" />
+                            {availabilityStatusLabel(availabilityStatus)}
+                        </span>
+                        <span
+                            className={`request-state request-state-${socketStatus}`}
+                            role="status"
+                        >
+                            <span className="status-dot" aria-hidden="true" />
+                            {statusLabel(socketStatus)}
+                        </span>
+                    </div>
                 </div>
                 {error && (
                     <p className="inline-message inline-message-error" role="alert">
