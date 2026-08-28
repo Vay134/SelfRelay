@@ -8,7 +8,7 @@ The project uses separate development, test, and production settings. Test adapt
 | --- | --- | --- | --- | --- |
 | Test | Test runner | In-process FastAPI | Disposable database or fakes | Fake only |
 | Development | Vite dev server | Local FastAPI | Development Supabase project or local stack | Team-address testing or fake |
-| Production | Cloudflare Pages | Koyeb Singapore | Supabase hosted project | Verified custom SMTP |
+| Production | Cloudflare Pages | Koyeb Free, Frankfurt | Supabase hosted project | Verified custom SMTP |
 
 Local development does not imply local production hosting.
 
@@ -18,23 +18,25 @@ Local development does not imply local production hosting.
 flowchart LR
     U[Browser] -->|HTTPS| P[PROJECT.is-a.dev]
     P -->|Static assets| CF[Cloudflare Pages]
-    U -->|HTTPS and WSS| A[api.PROJECT.is-a.dev]
-    A --> K[Koyeb FastAPI]
+    U -->|HTTP wake/readiness, then WSS| A[api.PROJECT.is-a.dev]
+    A --> K[Koyeb Free FastAPI]
     K --> S[Supabase Auth and PostgreSQL]
     S --> M[SMTP provider]
     U -.->|WebRTC relay fallback| T[Cloudflare TURN]
+    O[Provider-neutral probe via Cloudflare Worker Cron] -->|Authenticated end-to-end probe| A
 ```
 
 The `PROJECT` label is a placeholder until registration. The `auth.PROJECT.is-a.dev` name is reserved for transactional email DNS records if the provider accepts it.
 
 ## Current hosting choices
 
-The figures below were checked on 27 August 2026 and are not contractual.
+The figures below were checked on 28 August 2026 and are not contractual.
 
 | Service | Plan | Role | Expected cost |
 | --- | --- | --- | ---: |
 | Cloudflare Pages | Free | Static frontend | US$0 within plan limits |
-| Koyeb | Eco Micro, Singapore | FastAPI and WebSockets | US$2.68 per month before tax |
+| Cloudflare Workers | Free | Scheduled availability probe (Cron Triggers) | US$0 within plan limits |
+| Koyeb | Free, one instance in Frankfurt | FastAPI and WebSockets | US$0 within plan limits |
 | Supabase | Free | PostgreSQL and Auth | US$0 within plan limits |
 | Cloudflare Realtime TURN | Self-service | Relay fallback | First 1,000 GB free, then US$0.05 per outbound GB |
 | Resend, if compatible | Free | Auth email | US$0 up to 3,000 emails per month and 100 per day |
@@ -43,13 +45,25 @@ The figures below were checked on 27 August 2026 and are not contractual.
 Source pages:
 
 - [Koyeb instance reference](https://www.koyeb.com/docs/reference/instances)
+- [Koyeb scale-to-zero documentation](https://www.koyeb.com/docs/run-and-scale/scale-to-zero)
+- [Cloudflare Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
+- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+- [Cloudflare Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 - [Supabase pricing](https://supabase.com/pricing)
 - [Cloudflare Pages limits](https://developers.cloudflare.com/pages/platform/limits/)
 - [Cloudflare TURN pricing](https://developers.cloudflare.com/realtime/turn/faq/)
 - [Resend pricing](https://resend.com/docs/knowledge-base/what-is-resend-pricing)
 - [`is-a.dev` registration guide](https://docs.is-a.dev/quickstart/)
 
-Supabase Free can pause after a low-activity seven-day period and has no automatic backups. The owner must monitor pause warnings and restore the project if needed. [Supabase pausing documentation](https://supabase.com/docs/guides/platform/free-project-pausing)
+### Free-tier availability operation
+
+The production backend uses one Koyeb Free Instance in Frankfurt, with 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk. The instance uses one Uvicorn worker and automatically scales to zero after one idle hour; this Free behavior cannot be disabled. No custom scaling, persistent volume, or production SLA is part of this setup. These limits and behaviors are documented in the [Koyeb instance reference](https://www.koyeb.com/docs/reference/instances) and [scale-to-zero documentation](https://www.koyeb.com/docs/run-and-scale/scale-to-zero). Durable sessions, devices, offers, pairing records, and other authoritative state remain in Supabase; the Koyeb filesystem is disposable.
+
+The frontend availability module in `frontend/src/availability/` makes a bounded HTTP wake/readiness request before handing control to the existing presence/WebSocket client. The backend availability package in `backend/app/availability/` exposes the minimal safe readiness and probe surface, including a short-timeout database connectivity check. The availability layer does not duplicate the presence client's reconnect logic. A provider-neutral operations probe in `ops/availability-probe/` is deployed separately on a configurable Cloudflare Worker Cron schedule that defaults to three runs per day, and uses a host-stored credential to perform an authenticated end-to-end, database-backed check. It supplies regular genuine database activity for Supabase Free and reports failures, but it does not guarantee that Supabase will never pause. These modules are composed and wired at application boundaries; no Koyeb-specific branches are added to existing presence, transfer, or protocol modules.
+
+Supabase Free can pause after a low-activity seven-day period and has no automatic backups. The owner must monitor pause warnings, confirm probe failures are investigated, and restore the project if needed. [Supabase pausing documentation](https://supabase.com/docs/guides/platform/free-project-pausing)
+
+If the Free instance's cold starts or resource limits become unsuitable, paid Koyeb Eco Micro in Singapore is the upgrade path. It is not the current deployment choice.
 
 ## DNS plan
 
@@ -122,9 +136,12 @@ SESSION_HMAC_KEY
 RATE_LIMIT_HMAC_KEY
 CLOUDFLARE_TURN_KEY_ID
 CLOUDFLARE_TURN_API_TOKEN
+AVAILABILITY_PROBE_TOKEN
 ```
 
 Only variables needed by the chosen Supabase server flow should exist. A secret or service-role key never uses a `VITE_` prefix. Koyeb stores production secrets in its secret mechanism.
+
+The availability probe token is configured separately in the Koyeb and scheduler host secret stores. It is never placed in frontend configuration, source, logs, or user-visible errors.
 
 SMTP credentials live in Supabase rather than Koyeb for the normal SMTP design. If a future Send Email Hook is used, its credentials move to the hook's secret store.
 
@@ -147,11 +164,11 @@ Inline scripts and remote analytics are omitted from version 1. Source maps are 
 
 ## Backend hardening
 
-Koyeb runs a pinned container image as a non-root user. The image contains only runtime files. FastAPI sits behind Koyeb TLS and trusts forwarded headers only from the platform configuration.
+Koyeb Free runs a pinned container image as a non-root user with one Uvicorn worker. The image contains only runtime files. FastAPI sits behind Koyeb TLS and trusts forwarded headers only from the platform configuration.
 
 The API sets bounded request sizes and timeouts, validates `Host` and `Origin`, uses exact CORS origins, and never enables credentialed wildcard CORS. Documentation endpoints can be disabled or access controlled in production if they expose internal schemas.
 
-Health checks do not query or display secret values. Readiness may test database connectivity with a short timeout. Shutdown stops new offers, closes sockets, and gives active requests a bounded drain period.
+Health checks and availability probes do not query or display secret values. Readiness may test database connectivity with a short timeout, while the authenticated probe route returns only a safe status. Shutdown stops new offers, closes sockets, and gives active requests a bounded drain period.
 
 ## Database deployment
 
@@ -174,10 +191,13 @@ A production release must verify:
 - cookies have the intended security attributes
 - unsafe requests fail without the CSRF header
 - WebSockets reject foreign origins and reused tickets
+- the frontend performs HTTP-first wake/readiness before WSS, and the existing presence client reconnects after a Koyeb cold start or restart
+- the Koyeb deployment has one Uvicorn worker, 512 MB RAM, 0.1 vCPU, 2 GB ephemeral disk, automatic non-disableable one-hour idle scale-to-zero, no persistent volume, and no custom scaling
 - the database role cannot access tables outside its grants
 - the Supabase service secret is absent from browser bundles
+- the scheduled availability probe authenticates, performs a genuine database-backed end-to-end check, and exposes observable failures without sensitive diagnostics
+- Supabase pause warnings are monitored and the pause/restore runbook is complete; probe activity is not treated as a guarantee against pausing
 - email OTP works for external recipients
 - a forced TURN transfer completes
 - logs contain no OTP, token, private-key, file-name, SDP, or ICE values
 - environment names and error pages do not expose stack traces
-

@@ -22,6 +22,7 @@ The frontend unit suite covers:
 - transfer state transitions
 - file-name sanitization and plain-text rendering
 - backpressure behavior with mocked channel thresholds
+- availability wrapper state transitions, retry caps, backoff/jitter bounds, and delegation to the presence client without a second reconnect loop
 
 Cryptographic tests use fixed private test vectors committed only for testing. Production never imports those keys.
 
@@ -40,6 +41,7 @@ The backend suite covers:
 - WebSocket ticket consumption
 - rate-limit buckets and cleanup
 - safe log fields and error mapping
+- availability router authentication, bounded readiness/probe behavior, database timeout handling, and safe failure responses
 
 External calls use typed fakes for Supabase Auth and Cloudflare TURN.
 
@@ -84,8 +86,19 @@ Integration tests start FastAPI with a disposable database and fake Auth and TUR
 5. presence, offer, acceptance, signaling, and completion
 6. cancellation, expiry, and process restart behavior
 7. concurrent requests attempting to consume one challenge or pairing request
+8. availability wake/readiness, authenticated database-backed probe, and terminal failure behavior
 
 Every account-scoped endpoint receives an ownership-negative test. Identifiers from a second account must return the same safe failure regardless of whether the target exists.
+
+### Availability module tests
+
+The frontend, backend, and operations availability modules are tested as separate boundaries. Tests verify that:
+
+- the frontend sends a bounded HTTP wake/readiness request before opening WSS and then delegates reconnects to the existing presence client
+- capped retries use bounded backoff and jitter, reach a terminal failure state, and never remain pending forever
+- readiness and probe routes return only safe status values, reject unauthenticated probes, and do not disclose database or service diagnostics
+- the probe performs a genuine database-backed end-to-end check with a short timeout, reports failures, and keeps its credentials in host secret stores
+- the intended scheduler can run the provider-neutral probe three times per day by default, with a configurable cadence, without changing transfer or presence behavior
 
 ### Browser tests
 
@@ -106,6 +119,7 @@ Browser cases include:
 - duplicate or skipped frame counter
 - malicious file name and MIME type
 - receiver rejection before metadata disclosure
+- backend cold-start wake, bounded availability states, and WebSocket reconnect after restart
 
 Mobile checks keep the page in the foreground. Background transfer is expected to fail cleanly because it is outside version 1.
 
@@ -140,6 +154,8 @@ Load tests target the cheapest public operations first: health checks, OTP start
 
 TURN tests confirm that an unauthenticated user, rejected transfer, expired transfer, or foreign device cannot obtain credentials.
 
+Availability tests confirm that wake/readiness and probe endpoints are rate-limited as appropriate, use capped timeouts and retries, and do not become a database or diagnostic oracle.
+
 ## Manual checks
 
 Some behaviors need a real environment:
@@ -150,7 +166,10 @@ Some behaviors need a real environment:
 - relay selection when UDP is blocked
 - foreground mobile transfer behavior
 - Supabase pause and restore runbook
-- Koyeb restart and WebSocket reconnect behavior
+- Koyeb Free cold start, one-Uvicorn-worker resource limits, and WebSocket reconnect behavior
+- HTTP-first wake/readiness before WSS
+- the separately scheduled authenticated availability probe (three times per day by default, configurable) and its observable failure path
+- Supabase pause warnings, genuine database activity from the probe, and the restore runbook
 - log inspection after failed auth and transfer attempts
 
 ## Continuous integration
@@ -169,9 +188,10 @@ A public release requires:
 - an independent review of the threat model against the code
 - successful direct and forced-relay transfers
 - successful account bootstrap, pairing, revocation, and recovery
+- successful Koyeb Free cold-start wake, availability state handling, and presence reconnect
+- successful authenticated database-backed availability probe with no sensitive diagnostics
 - clean log review
 - documented browser results
 - a completed email-domain test or a deliberate switch to another provider or domain
 
 Coverage numbers can help locate untested code, but no percentage replaces the named security cases above.
-

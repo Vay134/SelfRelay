@@ -27,8 +27,8 @@ The web host is trusted because it supplies the JavaScript that performs the cry
 ```mermaid
 flowchart LR
     A[Sender browser] <-->|Encrypted WebRTC data| B[Receiver browser]
-    A <-->|HTTPS and WSS| API[FastAPI on Koyeb]
-    B <-->|HTTPS and WSS| API
+    A <-->|HTTP wake/readiness, then WSS| API[FastAPI on Koyeb Free]
+    B <-->|HTTP wake/readiness, then WSS| API
     API <-->|Auth and SQL| DB[Supabase]
     A -.->|Relay when needed| TURN[Cloudflare TURN]
     B -.->|Relay when needed| TURN
@@ -37,6 +37,8 @@ flowchart LR
 ```
 
 The backend is a browser-facing API rather than a file proxy. File throughput normally depends on the peers' connection. If WebRTC falls back to TURN, Cloudflare relays the encrypted packets.
+
+Production uses one Koyeb Free backend instance in Frankfurt. It can scale to zero after one idle hour, so a separate availability layer wakes the API over HTTP before handing control to the existing presence/WebSocket client. Supabase remains the durable state store, and a separately deployed authenticated probe supplies regular genuine database activity while pause warnings are still monitored. Paid Koyeb Eco Micro in Singapore is the upgrade path if the free instance becomes unsuitable.
 
 ## Stack
 
@@ -49,7 +51,8 @@ The backend is a browser-facing API rather than a file proxy. File throughput no
 | Database and identity proof | Supabase PostgreSQL and Auth |
 | TURN | Cloudflare Realtime TURN |
 | Frontend hosting | Cloudflare Pages |
-| Backend hosting | Koyeb Eco Micro in Singapore |
+| Backend hosting | Koyeb Free, one instance in Frankfurt |
+| Availability | Separate frontend/backend availability modules and a scheduled provider-neutral probe |
 | Public hostname | An `is-a.dev` subdomain, subject to approval |
 | Auth email | Provider-neutral SMTP; Resend is the first provider to test |
 

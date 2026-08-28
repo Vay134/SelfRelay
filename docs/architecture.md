@@ -22,17 +22,19 @@ flowchart TB
 
     subgraph Managed services
         CF[Cloudflare Pages]
-        API[FastAPI on Koyeb]
+        API[FastAPI on Koyeb Free]
         PG[Supabase PostgreSQL]
         AUTH[Supabase Auth]
         TURN[Cloudflare TURN]
         SMTP[SMTP provider]
+        OP[Provider-neutral availability probe<br/>Cloudflare Worker Cron]
     end
 
     CF --> UIA
     CF --> UIB
-    UIA <-->|HTTPS and WSS| API
-    UIB <-->|HTTPS and WSS| API
+    UIA <-->|HTTP wake/readiness, then WSS| API
+    UIB <-->|HTTP wake/readiness, then WSS| API
+    OP -->|Authenticated end-to-end probe| API
     API <-->|SQL| PG
     API <-->|OTP start and verify| AUTH
     AUTH --> SMTP
@@ -67,6 +69,12 @@ FastAPI is the only public application backend. Its responsibilities are:
 - enforcing account ownership, quotas, expiry, and rate limits
 
 FastAPI does not accept file uploads. A route that could receive an arbitrary file body is outside the design.
+
+### Hosting availability module
+
+Availability is a separate frontend wrapper in `frontend/src/availability/`, backend package/router in `backend/app/availability/`, and provider-neutral operations probe in `ops/availability-probe/`. The frontend wrapper makes a bounded HTTP wake/readiness request before handing control to the existing presence/WebSocket client. It exposes bounded states and capped retries with backoff and jitter, but does not duplicate the presence client's reconnect loop.
+
+The backend package exposes only minimal wake, readiness, and authenticated probe surfaces. Its database connectivity check has a short timeout and returns a safe status without database details, secrets, or other sensitive diagnostics. The operations probe is deployed separately, initially with Cloudflare Worker Cron three times per day by default, with a configurable schedule, and performs a low-frequency authenticated end-to-end check that reaches the database. Probe credentials live only in host secret stores. These modules are composed and wired at application boundaries with the existing control-plane modules without changing their contracts; no Koyeb-specific branches enter existing presence, transfer, or protocol modules.
 
 ### Supabase
 
@@ -146,11 +154,11 @@ The generic offer does not contain a file name, MIME type, or size. The receiver
 
 ## Availability and scaling
 
-Version 1 runs one FastAPI instance. In-memory presence is acceptable only as a cache; authoritative sessions, devices, offers, and pairing records live in PostgreSQL. A process restart disconnects WebSockets and cancels active negotiations, but clients can reconnect and begin a new transfer.
+Version 1 runs one Koyeb Free FastAPI instance in Frankfurt, with one Uvicorn worker, 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk. It automatically scales to zero after one idle hour, a Free behavior that cannot be disabled, and has no custom scaling, persistent volume, or production SLA. In-memory presence is acceptable only as a cache; authoritative sessions, devices, offers, and pairing records live in PostgreSQL. A process restart or cold start disconnects WebSockets and cancels active negotiations, but the availability wrapper wakes the API first and the existing presence client can reconnect and begin a new transfer.
 
-Running more than one backend instance would require shared presence and signaling fanout, such as Redis or another pub/sub system. That work is deferred until the single instance becomes a measured limit.
+Running more than one backend instance would require shared presence and signaling fanout, such as Redis or another pub/sub system. That work is deferred until the single instance becomes a measured limit. The Koyeb [instance limits](https://www.koyeb.com/docs/reference/instances) and [scale-to-zero behavior](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) are deployment constraints, not reliability guarantees.
 
-Supabase Free may pause after low activity, and the Koyeb Starter setup has no production SLA. The UI should report backend unavailability plainly rather than presenting a transfer as pending forever.
+Supabase Free may pause after low activity. The scheduled authenticated operations probe supplies regular genuine database activity and reports failures, but it does not guarantee that Supabase will never pause; pause warnings and the restore runbook still require monitoring. The UI should report backend unavailability plainly, reach a bounded failed state, and never present a transfer as pending forever. Paid Koyeb Eco Micro in Singapore is an upgrade path if the Free instance's limits become unsuitable, not the current deployment choice.
 
 ## Planned repository layout
 
@@ -168,4 +176,3 @@ docs/
 ```
 
 The TypeScript and Python implementations share versioned protocol fixtures rather than importing runtime code from each other. Fixtures include canonical messages, fingerprints, signatures, derived keys, nonces, and encrypted frames.
-

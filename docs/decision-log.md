@@ -66,7 +66,9 @@ Version 1 has no offline inbox and does not use Supabase Storage. This reduces s
 
 Status: accepted
 
-Cloudflare Pages hosts the static frontend. Koyeb runs one Eco Micro FastAPI instance in Singapore. Supabase Free hosts Auth and PostgreSQL. Cloudflare provides managed TURN. This configuration meets the small-scale deployment requirement but provides no high-availability guarantee and is unsuitable for a critical service.
+Cloudflare Pages hosts the static frontend. Koyeb runs one Free FastAPI instance in Frankfurt, with one Uvicorn worker, 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk. The instance automatically scales to zero after one idle hour, a Free behavior that cannot be disabled; custom scaling and persistent volumes are not used, and the deployment has no production SLA. [Koyeb instance reference](https://www.koyeb.com/docs/reference/instances), [scale-to-zero documentation](https://www.koyeb.com/docs/run-and-scale/scale-to-zero)
+
+Supabase Free hosts Auth and PostgreSQL. Cloudflare provides managed TURN. Separate availability modules under `frontend/src/availability/`, `backend/app/availability/`, and `ops/availability-probe/` wake the backend over HTTP before handing control to the existing presence/WebSocket client and run a configurable authenticated probe three times per day by default to supply regular genuine database activity through a scheduled deployment. The probe does not guarantee that Supabase will never pause, so pause warnings and restoration remain operational responsibilities. These modules are composed and wired at application boundaries; no Koyeb-specific branches enter existing presence, transfer, or protocol modules. This configuration meets the small-scale deployment requirement but provides no high-availability guarantee and is unsuitable for a critical service. Paid Koyeb Eco Micro in Singapore is the upgrade path if the Free instance becomes unsuitable, not the current choice.
 
 ## D011: free project hostname
 

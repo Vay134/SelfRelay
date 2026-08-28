@@ -214,32 +214,61 @@ Exit criteria:
 - untrusted text cannot become markup or script
 - supported desktop browsers pass the core transfer suite
 
-## Phase 10: hosted deployment and email
+## Phase 10: hosting availability module
+
+Add a small availability boundary around the hosted deployment without changing the transfer, presence, or protocol modules already built in Phases 0 through 6.
+
+Work:
+
+- create a frontend availability wrapper/module that sends an HTTP wake/readiness request before handing control to the existing presence/WebSocket client
+- place the frontend wrapper/module under `frontend/src/availability/`, the backend package/router under `backend/app/availability/`, and the provider-neutral operations probe under `ops/availability-probe/`
+- expose bounded availability states such as `starting`, `ready`, `degraded`, and `failed`, with capped retries, backoff, and jitter
+- create a backend availability package/router with minimal public wake, readiness, and probe surfaces
+- keep the backend database connectivity probe bounded by a short timeout and return only a safe status, never database details or service diagnostics
+- create a provider-neutral operations availability probe/deployment package, initially scheduled with Cloudflare Worker Cron three times per day by default and configurable for operations needs, that authenticates and exercises the end-to-end path so Supabase Free receives genuine database activity
+- keep probe credentials in the Koyeb and scheduler secret stores; never place them in source, frontend configuration, logs, or user-visible errors
+- compose and wire these modules only at the application boundaries with the existing Phase 0 through 6 modules later; the availability layer wakes the backend and delegates reconnection to the presence client rather than duplicating its reconnect loop, and no Koyeb-specific branches enter existing presence, transfer, or protocol modules
+- add unit and integration tests for state transitions, retry caps, jitter bounds, probe authentication, database timeouts, safe diagnostics, and terminal failure behavior
+
+Exit criteria:
+
+- a cold backend can be woken by HTTP before the client attempts WSS, then handed off to the existing presence/WebSocket client
+- availability states reach a bounded terminal failure instead of remaining pending forever, and retry behavior is capped and observable without sensitive details
+- the backend availability package exposes only the intended safe status/probe behavior and cannot be used as a database or diagnostic oracle
+- the scheduled authenticated probe completes a genuine database-backed end-to-end check and reports failures without claiming to prevent every Supabase pause
+- the new modules pass unit and integration tests without changing the Phase 0 through 6 module contracts or duplicating presence reconnect logic
+
+## Phase 11: hosted deployment and email
 
 Deploy the same tested artifacts and complete the manual service checks.
 
 Work:
 
 - deploy the frontend to Cloudflare Pages
-- deploy the pinned backend image to Koyeb Eco Micro in Singapore
+- deploy one Uvicorn worker in the pinned image to one Koyeb Free Instance in Frankfurt, using 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk; verify and accept its automatic one-hour idle scale-to-zero behavior, which cannot be disabled on Free, with no custom scaling, persistent volume, or production SLA ([instance reference](https://www.koyeb.com/docs/reference/instances), [scale-to-zero documentation](https://www.koyeb.com/docs/run-and-scale/scale-to-zero))
+- keep durable sessions, devices, offers, pairing records, and other authoritative state in Supabase; treat the Koyeb filesystem as disposable
 - create the hosted Supabase project and apply migrations
 - request the `is-a.dev` records for frontend and API
 - test the Resend sending subdomain and submit its DNS records
 - configure Supabase custom SMTP only after domain verification
 - configure production secrets, origins, cookies, health checks, and monitoring
+- deploy the separate availability probe from Phase 10 with the intended provider-neutral package under `ops/availability-probe/` and a configurable Cloudflare Worker Cron schedule that defaults to three runs per day; verify its authenticated database-backed check and failure visibility
+- verify that the frontend performs an HTTP wake/readiness request before WSS, and that the existing presence client reconnects cleanly after a cold start or backend restart
 - run direct and relay transfers across separate networks
-- write the pause, restore, key-rotation, and incident runbooks
+- write the Koyeb cold-start, Supabase pause-warning and restore, key-rotation, and incident runbooks
 
 Exit criteria:
 
 - external test accounts receive and verify OTPs
 - production bundles and logs contain no secrets
 - HTTPS, cookies, CORS, CSRF, WebSocket, database grants, and TURN checks pass
+- the Koyeb Free deployment uses one Uvicorn worker with no persistent volume or custom scaling, and its HTTP-first wake/readiness and WebSocket reconnect behavior plus automatic, non-disableable one-hour idle scale-to-zero behavior are verified
+- the scheduled probe supplies regular genuine Supabase database activity, while pause warnings remain monitored and the restore procedure is tested
 - an external user can complete a transfer without local infrastructure
 
-If `is-a.dev` or Resend verification fails, this phase switches to a purchased domain or another compatible SMTP provider. Earlier phases do not change.
+If `is-a.dev` or Resend verification fails, this phase switches to a purchased domain or another compatible SMTP provider. If the free-instance limits become unsuitable, paid Koyeb Eco Micro in Singapore is the upgrade path; it is not the current deployment choice. Earlier phases do not change.
 
-## Phase 11: release validation and operational documentation
+## Phase 12: release validation and operational documentation
 
 Compare the implementation with the claims made in this documentation.
 
