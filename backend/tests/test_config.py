@@ -45,7 +45,9 @@ def test_invalid_app_environment_is_rejected(value: str) -> None:
         ("APP_ORIGIN", "https://app.example.test/path"),
         ("APP_ORIGIN", "https://app.example.test?query=1"),
         ("API_ORIGIN", "ftp://api.example.test"),
+        # secretlint-disable
         ("API_ORIGIN", "https://user:password@api.example.test"),
+        # secretlint-enable
         ("API_ORIGIN", "https://api.example.test:bad"),
     ],
 )
