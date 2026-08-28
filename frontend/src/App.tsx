@@ -23,6 +23,7 @@ import {
     loadDeviceIdentity,
 } from './deviceIdentity';
 import AccountConsole from './AccountConsole';
+import ConfirmationDialog from './ConfirmationDialog';
 import TransferConsole from './TransferConsole';
 
 const REQUEST_POLL_INTERVAL_MS = 2_000;
@@ -424,6 +425,10 @@ function TrustedDevicePairing() {
     const [state, setState] = useState<TrustedDeviceState>('checking');
     const [codes, setCodes] = useState<Record<string, string>>({});
     const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
+    const [approvalConfirmation, setApprovalConfirmation] = useState<PairingApprovalRequest | null>(
+        null,
+    );
+    const [approvalBusy, setApprovalBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
 
@@ -466,13 +471,28 @@ function TrustedDevicePairing() {
         return () => window.clearInterval(timer);
     }, [refresh, session]);
 
-    const handleApprove = async (pairingRequest: PairingApprovalRequest) => {
+    const handleApprove = (pairingRequest: PairingApprovalRequest) => {
         const comparisonCode = codes[pairingRequest.request_id] ?? '';
         if (!/^\d{6}$/u.test(comparisonCode)) {
             setError('Enter the six-digit code shown on the new browser.');
             return;
         }
+        setApprovalConfirmation(pairingRequest);
+    };
+
+    const confirmApprove = async () => {
+        const pairingRequest = approvalConfirmation;
+        if (!pairingRequest) {
+            return;
+        }
+        const comparisonCode = codes[pairingRequest.request_id] ?? '';
+        if (!/^\d{6}$/u.test(comparisonCode)) {
+            setApprovalConfirmation(null);
+            setError('Enter the six-digit code shown on the new browser.');
+            return;
+        }
         setBusyRequestId(pairingRequest.request_id);
+        setApprovalBusy(true);
         setError(null);
         setNotice(null);
         try {
@@ -498,6 +518,8 @@ function TrustedDevicePairing() {
             setError(errorMessage(approveError, 'The pairing request could not be approved.'));
         } finally {
             setBusyRequestId(null);
+            setApprovalBusy(false);
+            setApprovalConfirmation(null);
         }
     };
 
@@ -549,131 +571,148 @@ function TrustedDevicePairing() {
     }
 
     return (
-        <section className="pairing-panel" aria-labelledby="trusted-device-title">
-            <div className="panel-heading panel-heading-row">
-                <div>
-                    <p className="section-kicker">Trusted device</p>
-                    <h2 id="trusted-device-title">Review new browser requests</h2>
-                    <p>
-                        Compare the code you heard with the request details, then approve the exact
-                        key.
+        <>
+            <section className="pairing-panel" aria-labelledby="trusted-device-title">
+                <div className="panel-heading panel-heading-row">
+                    <div>
+                        <p className="section-kicker">Trusted device</p>
+                        <h2 id="trusted-device-title">Review new browser requests</h2>
+                        <p>
+                            Compare the code you heard with the request details, then approve the
+                            exact key.
+                        </p>
+                    </div>
+                    <button
+                        className="button button-small"
+                        type="button"
+                        onClick={() => void refresh()}
+                    >
+                        Refresh
+                    </button>
+                </div>
+                {error && (
+                    <p className="inline-message inline-message-error" role="alert">
+                        {error}
                     </p>
-                </div>
-                <button
-                    className="button button-small"
-                    type="button"
-                    onClick={() => void refresh()}
-                >
-                    Refresh
-                </button>
-            </div>
-            {error && (
-                <p className="inline-message inline-message-error" role="alert">
-                    {error}
-                </p>
-            )}
-            {notice && (
-                <p className="inline-message inline-message-success" role="status">
-                    {notice}
-                </p>
-            )}
-            {requests.length === 0 ? (
-                <div className="empty-state">
-                    <span className="empty-glyph" aria-hidden="true">
-                        ⌁
-                    </span>
-                    <strong>No pending browsers</strong>
-                    <p>New pairing requests will appear here automatically.</p>
-                </div>
-            ) : (
-                <div className="request-list">
-                    {requests.map((pairingRequest) => {
-                        const busy = busyRequestId === pairingRequest.request_id;
-                        const code = codes[pairingRequest.request_id] ?? '';
-                        return (
-                            <article className="trusted-request" key={pairingRequest.request_id}>
-                                <div className="trusted-request-heading">
-                                    <div>
-                                        <span className="request-label">New browser</span>
-                                        <h3>{pairingRequest.requested_label}</h3>
-                                    </div>
-                                    <span className="request-expiry">
-                                        {formatRemaining(pairingRequest.expires_at, Date.now())}
-                                    </span>
-                                </div>
-                                <dl className="request-details request-details-compact">
-                                    <div>
-                                        <dt>Comparison</dt>
-                                        <dd>Enter the code from the other screen</dd>
-                                    </div>
-                                    <div>
-                                        <dt>Fingerprint</dt>
-                                        <dd>
-                                            <code title={pairingRequest.requested_fingerprint}>
-                                                {formatFingerprint(
-                                                    pairingRequest.requested_fingerprint,
-                                                )}
-                                            </code>
-                                        </dd>
-                                    </div>
-                                    <div>
-                                        <dt>Requested</dt>
-                                        <dd>{formatDate(pairingRequest.created_at)}</dd>
-                                    </div>
-                                </dl>
-                                <label
-                                    className="comparison-input-label"
-                                    htmlFor={`code-${pairingRequest.request_id}`}
+                )}
+                {notice && (
+                    <p className="inline-message inline-message-success" role="status">
+                        {notice}
+                    </p>
+                )}
+                {requests.length === 0 ? (
+                    <div className="empty-state">
+                        <span className="empty-glyph" aria-hidden="true">
+                            ⌁
+                        </span>
+                        <strong>No pending browsers</strong>
+                        <p>New pairing requests will appear here automatically.</p>
+                    </div>
+                ) : (
+                    <div className="request-list">
+                        {requests.map((pairingRequest) => {
+                            const busy = busyRequestId === pairingRequest.request_id;
+                            const code = codes[pairingRequest.request_id] ?? '';
+                            return (
+                                <article
+                                    className="trusted-request"
+                                    key={pairingRequest.request_id}
                                 >
-                                    Six-digit code
-                                    <input
-                                        id={`code-${pairingRequest.request_id}`}
-                                        inputMode="numeric"
-                                        autoComplete="one-time-code"
-                                        pattern="[0-9]{6}"
-                                        maxLength={6}
-                                        value={code}
-                                        onChange={(event) => {
-                                            const nextCode = event.target.value
-                                                .replace(/\D/gu, '')
-                                                .slice(0, 6);
-                                            setCodes((current) => ({
-                                                ...current,
-                                                [pairingRequest.request_id]: nextCode,
-                                            }));
-                                        }}
-                                        disabled={busy}
-                                    />
-                                </label>
-                                <div className="request-actions">
-                                    <button
-                                        className="button button-primary"
-                                        type="button"
-                                        onClick={() => void handleApprove(pairingRequest)}
-                                        disabled={busy || code.length !== 6}
+                                    <div className="trusted-request-heading">
+                                        <div>
+                                            <span className="request-label">New browser</span>
+                                            <h3>{pairingRequest.requested_label}</h3>
+                                        </div>
+                                        <span className="request-expiry">
+                                            {formatRemaining(pairingRequest.expires_at, Date.now())}
+                                        </span>
+                                    </div>
+                                    <dl className="request-details request-details-compact">
+                                        <div>
+                                            <dt>Comparison</dt>
+                                            <dd>Enter the code from the other screen</dd>
+                                        </div>
+                                        <div>
+                                            <dt>Fingerprint</dt>
+                                            <dd>
+                                                <code title={pairingRequest.requested_fingerprint}>
+                                                    {formatFingerprint(
+                                                        pairingRequest.requested_fingerprint,
+                                                    )}
+                                                </code>
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt>Requested</dt>
+                                            <dd>{formatDate(pairingRequest.created_at)}</dd>
+                                        </div>
+                                    </dl>
+                                    <label
+                                        className="comparison-input-label"
+                                        htmlFor={`code-${pairingRequest.request_id}`}
                                     >
-                                        {busy ? 'Working…' : 'Approve browser'}
-                                    </button>
-                                    <button
-                                        className="button button-danger"
-                                        type="button"
-                                        onClick={() => void handleReject(pairingRequest)}
-                                        disabled={busy}
-                                    >
-                                        Reject
-                                    </button>
-                                </div>
-                            </article>
-                        );
-                    })}
-                </div>
+                                        Six-digit code
+                                        <input
+                                            id={`code-${pairingRequest.request_id}`}
+                                            inputMode="numeric"
+                                            autoComplete="one-time-code"
+                                            pattern="[0-9]{6}"
+                                            maxLength={6}
+                                            value={code}
+                                            onChange={(event) => {
+                                                const nextCode = event.target.value
+                                                    .replace(/\D/gu, '')
+                                                    .slice(0, 6);
+                                                setCodes((current) => ({
+                                                    ...current,
+                                                    [pairingRequest.request_id]: nextCode,
+                                                }));
+                                            }}
+                                            disabled={busy}
+                                        />
+                                    </label>
+                                    <div className="request-actions">
+                                        <button
+                                            className="button button-primary"
+                                            type="button"
+                                            onClick={() => handleApprove(pairingRequest)}
+                                            disabled={busy || code.length !== 6}
+                                        >
+                                            {busy ? 'Working…' : 'Approve browser'}
+                                        </button>
+                                        <button
+                                            className="button button-danger"
+                                            type="button"
+                                            onClick={() => void handleReject(pairingRequest)}
+                                            disabled={busy}
+                                        >
+                                            Reject
+                                        </button>
+                                    </div>
+                                </article>
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
+            {approvalConfirmation && (
+                <ConfirmationDialog
+                    title={`Approve ${approvalConfirmation.requested_label}?`}
+                    description="This will activate the exact browser key shown above. Only approve a request you recognize and whose comparison code you verified on the other screen."
+                    confirmLabel="Approve browser"
+                    busy={approvalBusy}
+                    onCancel={() => setApprovalConfirmation(null)}
+                    onConfirm={() => void confirmApprove()}
+                />
             )}
-        </section>
+        </>
     );
 }
 
 function PairingConsole() {
-    const [view, setView] = useState<'account' | 'new-browser' | 'trusted-device' | 'transfers'>('account');
+    const [view, setView] = useState<'account' | 'new-browser' | 'trusted-device' | 'transfers'>(
+        'account',
+    );
 
     return (
         <div className="app-frame">

@@ -29,6 +29,7 @@ import {
 import { PresenceSocketClient, type PresenceClientStatus } from './presenceClient';
 import { decodeBase64Url, importP256Spki, type DerivedHandshakeMaterial } from './transferProtocol';
 import { rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
+import ConfirmationDialog from './ConfirmationDialog';
 import {
     WebRtcTestSession,
     type WebRtcRelayStatus,
@@ -96,8 +97,29 @@ function statusLabel(status: PresenceClientStatus): string {
     }[status];
 }
 
+function connectionStateLabel(state: WebRtcTestState): string {
+    return {
+        idle: 'Waiting to connect',
+        negotiating: 'Connecting securely',
+        connected: 'Connected securely',
+        failed: 'Connection failed',
+        closed: 'Connection closed',
+    }[state];
+}
+
 function transferStatusLabel(status: TransferRequest['status']): string {
-    return status.charAt(0).toUpperCase() + status.slice(1);
+    return {
+        offered: 'Waiting for acceptance',
+        accepted: 'Ready to connect',
+        negotiating: 'Connecting securely',
+        connected: 'Secure channel ready',
+        transferring: 'Transferring file',
+        completed: 'Transfer complete',
+        rejected: 'Declined',
+        expired: 'Expired',
+        cancelled: 'Cancelled',
+        failed: 'Transfer failed',
+    }[status];
 }
 
 function formatDate(value: string): string {
@@ -145,6 +167,12 @@ type TransferSessionContext = {
     enginePromise?: Promise<FileTransferEngine>;
 };
 
+type DownloadConfirmation = {
+    fileName: string;
+    downloadUrl: string;
+    byteCount: number;
+};
+
 function formatBytes(value: number): string {
     if (value === 0) {
         return '0 B';
@@ -190,6 +218,9 @@ function TransferConsole() {
     const [busyTransferId, setBusyTransferId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    const [downloadConfirmation, setDownloadConfirmation] = useState<DownloadConfirmation | null>(
+        null,
+    );
     const [transferRuns, setTransferRuns] = useState<Record<string, TransferRun>>({});
     const sessionRef = useRef<CurrentSession | null>(null);
     const devicesRef = useRef(devices);
@@ -804,7 +835,7 @@ function TransferConsole() {
             error: undefined,
         });
         setError(null);
-        setNotice('File selected. Establishing the authenticated secure channel…');
+        setNotice('File selected. Opening the encrypted browser channel…');
         void startSenderSession(transfer);
     };
 
@@ -820,7 +851,7 @@ function TransferConsole() {
             const created = await createTransferOffer(selectedDeviceId);
             upsertTransfer(created);
             setNotice(
-                'Generic transfer offer sent. The other device must accept before negotiation starts.',
+                'Transfer request sent. The other browser must accept before the channel opens.',
             );
         } catch (createError) {
             setError(errorMessage(createError, 'The transfer offer could not be created.'));
@@ -842,7 +873,7 @@ function TransferConsole() {
                 throw new Error('The authenticated transfer session could not be created.');
             }
             await testSession?.start();
-            setNotice('Offer accepted. Waiting for the sender to choose a file.');
+            setNotice('Transfer accepted. Waiting for the sender to choose a file.');
         } catch (acceptError) {
             markSessionFailed(
                 transfer.transfer_id,
@@ -861,7 +892,7 @@ function TransferConsole() {
         try {
             upsertTransfer(await rejectTransfer(transfer.transfer_id));
             cancelledTransfersRef.current.add(transfer.transfer_id);
-            setNotice('The generic transfer offer was rejected.');
+            setNotice('The transfer request was declined.');
         } catch (rejectError) {
             setError(errorMessage(rejectError, 'The transfer offer could not be rejected.'));
         } finally {
@@ -887,6 +918,33 @@ function TransferConsole() {
             }
             setBusyTransferId(null);
         }
+    };
+
+    const requestDownload = (receivedFile: ReceivedFile): void => {
+        if (!receivedFile.downloadUrl) {
+            return;
+        }
+        setDownloadConfirmation({
+            fileName: receivedFile.fileName,
+            downloadUrl: receivedFile.downloadUrl,
+            byteCount: receivedFile.byteCount,
+        });
+    };
+
+    const confirmDownload = (): void => {
+        const pending = downloadConfirmation;
+        if (!pending) {
+            return;
+        }
+        const link = document.createElement('a');
+        link.href = pending.downloadUrl;
+        link.download = pending.fileName;
+        link.rel = 'noopener';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setDownloadConfirmation(null);
+        setNotice('Download started for the verified file.');
     };
 
     if (state === 'checking') {
@@ -925,322 +983,344 @@ function TransferConsole() {
     }
 
     return (
-        <section className="pairing-panel transfer-panel" aria-labelledby="transfer-title">
-            <div className="panel-heading panel-heading-row">
-                <div>
-                    <p className="section-kicker">Secure transfer</p>
-                    <h2 id="transfer-title">Connect two trusted devices</h2>
-                    <p>
-                        Offers contain no file details. Accept a request, then send a file through
-                        the authenticated browser channel.
-                    </p>
-                </div>
-                <span className={`request-state request-state-${socketStatus}`} role="status">
-                    <span className="status-dot" aria-hidden="true" />
-                    {statusLabel(socketStatus)}
-                </span>
-            </div>
-            {error && (
-                <p className="inline-message inline-message-error" role="alert">
-                    {error}
-                </p>
-            )}
-            {notice && (
-                <p className="inline-message inline-message-success" role="status">
-                    {notice}
-                </p>
-            )}
-            <div className="transfer-create">
-                <div>
-                    <p className="request-label">Start an offer</p>
-                    <strong>Choose an online device</strong>
-                </div>
-                <select
-                    aria-label="Recipient device"
-                    value={selectedDeviceId}
-                    onChange={(event) => setSelectedDeviceId(event.target.value)}
-                    disabled={otherDevices.length === 0 || busyTransferId === 'new'}
-                >
-                    <option value="">Select a device</option>
-                    {otherDevices.map((device) => (
-                        <option key={device.device_id} value={device.device_id}>
-                            {device.label}
-                        </option>
-                    ))}
-                </select>
-                <button
-                    className="button button-primary"
-                    type="button"
-                    onClick={() => void handleCreateOffer()}
-                    disabled={!selectedDeviceId || busyTransferId === 'new'}
-                >
-                    {busyTransferId === 'new' ? 'Sending…' : 'Send generic offer'}
-                </button>
-            </div>
-            {otherDevices.length === 0 && (
-                <p className="inline-message inline-message-neutral" role="status">
-                    No other trusted devices are online right now.
-                </p>
-            )}
-            {incomingOffers.length > 0 && (
-                <div className="transfer-group" aria-labelledby="incoming-offers-title">
-                    <div className="transfer-group-heading">
-                        <div>
-                            <p className="request-label">Incoming</p>
-                            <h3 id="incoming-offers-title">Generic transfer offers</h3>
-                        </div>
-                        <span className="request-expiry">{incomingOffers.length}</span>
-                    </div>
-                    <div className="transfer-list">
-                        {incomingOffers.map((transfer) => {
-                            const busy = busyTransferId === transfer.transfer_id;
-                            return (
-                                <article className="transfer-card" key={transfer.transfer_id}>
-                                    <div className="trusted-request-heading">
-                                        <div>
-                                            <span className="request-label">
-                                                From{' '}
-                                                {deviceName(
-                                                    transfer.sender_device_id,
-                                                    session,
-                                                    devices,
-                                                )}
-                                            </span>
-                                            <h3>Generic transfer request</h3>
-                                        </div>
-                                        <span className="request-expiry">
-                                            Expires {formatDate(transfer.expires_at)}
-                                        </span>
-                                    </div>
-                                    <p className="transfer-copy">
-                                        No file name, type, size, or message is visible until you
-                                        accept and establish a secure channel.
-                                    </p>
-                                    <div className="request-actions">
-                                        <button
-                                            className="button button-primary"
-                                            type="button"
-                                            onClick={() => void handleAccept(transfer)}
-                                            disabled={busy}
-                                        >
-                                            {busy ? 'Working…' : 'Accept offer'}
-                                        </button>
-                                        <button
-                                            className="button button-danger"
-                                            type="button"
-                                            onClick={() => void handleReject(transfer)}
-                                            disabled={busy}
-                                        >
-                                            Reject
-                                        </button>
-                                    </div>
-                                </article>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
-            <div className="transfer-group" aria-labelledby="activity-title">
-                <div className="transfer-group-heading">
+        <>
+            <section className="pairing-panel transfer-panel" aria-labelledby="transfer-title">
+                <div className="panel-heading panel-heading-row">
                     <div>
-                        <p className="request-label">Activity</p>
-                        <h3 id="activity-title">Transfer control</h3>
+                        <p className="section-kicker">Secure transfer</p>
+                        <h2 id="transfer-title">Send a file between trusted browsers</h2>
+                        <p>
+                            Send a request, wait for the other browser to accept it, then choose a
+                            file for the encrypted peer-to-peer transfer.
+                        </p>
                     </div>
-                    <button
-                        className="button button-small"
-                        type="button"
-                        onClick={() => void refresh()}
+                    <span className={`request-state request-state-${socketStatus}`} role="status">
+                        <span className="status-dot" aria-hidden="true" />
+                        {statusLabel(socketStatus)}
+                    </span>
+                </div>
+                {error && (
+                    <p className="inline-message inline-message-error" role="alert">
+                        {error}
+                    </p>
+                )}
+                {notice && (
+                    <p className="inline-message inline-message-success" role="status">
+                        {notice}
+                    </p>
+                )}
+                <div className="transfer-create">
+                    <div>
+                        <p className="request-label">Start a transfer</p>
+                        <strong>Choose an online browser</strong>
+                    </div>
+                    <select
+                        aria-label="Recipient device"
+                        value={selectedDeviceId}
+                        onChange={(event) => setSelectedDeviceId(event.target.value)}
+                        disabled={otherDevices.length === 0 || busyTransferId === 'new'}
                     >
-                        Refresh
+                        <option value="">Select a device</option>
+                        {otherDevices.map((device) => (
+                            <option key={device.device_id} value={device.device_id}>
+                                {device.label}
+                            </option>
+                        ))}
+                    </select>
+                    <button
+                        className="button button-primary"
+                        type="button"
+                        onClick={() => void handleCreateOffer()}
+                        disabled={!selectedDeviceId || busyTransferId === 'new'}
+                    >
+                        {busyTransferId === 'new' ? 'Sending request…' : 'Send transfer request'}
                     </button>
                 </div>
-                {transfers.length === 0 ? (
-                    <div className="empty-state">
-                        <span className="empty-glyph" aria-hidden="true">
-                            ⌁
-                        </span>
-                        <strong>No transfer offers yet</strong>
-                        <p>Choose an online device to create a generic offer.</p>
-                    </div>
-                ) : (
-                    <div className="transfer-list">
-                        {transfers.map((transfer) => {
-                            const busy = busyTransferId === transfer.transfer_id;
-                            const connectionState = connectionStates[transfer.transfer_id];
-                            const isParticipant =
-                                transfer.sender_device_id === session?.device_id ||
-                                transfer.recipient_device_id === session?.device_id;
-                            const run = transferRuns[transfer.transfer_id];
-                            const isSender = transfer.sender_device_id === session?.device_id;
-                            const runHasEnded =
-                                run !== undefined &&
-                                ['completed', 'cancelled', 'closed'].includes(run.state);
-                            const canChooseFile =
-                                isSender &&
-                                transfer.status === 'accepted' &&
-                                !busy &&
-                                (!run ||
-                                    (run.state === 'failed' &&
-                                        !sessionsRef.current.has(transfer.transfer_id)));
-                            const canCancel =
-                                isParticipant &&
-                                [
-                                    'offered',
-                                    'accepted',
-                                    'negotiating',
-                                    'connected',
-                                    'transferring',
-                                ].includes(transfer.status) &&
-                                !runHasEnded;
-                            const progress = run?.progress ?? null;
-                            const progressPercent = transferProgressPercent(progress, run?.state);
-                            const progressMax = Math.max(1, progress?.totalBytes ?? 1);
-                            const progressValue = Math.min(
-                                progressMax,
-                                progress?.bytesTransferred ?? (run?.state === 'completed' ? 1 : 0),
-                            );
-                            return (
-                                <article className="transfer-card" key={transfer.transfer_id}>
-                                    <div className="trusted-request-heading">
-                                        <div>
-                                            <span className="request-label">
-                                                {transferStatusLabel(transfer.status)}
-                                            </span>
-                                            <h3>
-                                                {deviceName(
-                                                    transfer.sender_device_id,
-                                                    session,
-                                                    devices,
-                                                )}{' '}
-                                                →{' '}
-                                                {deviceName(
-                                                    transfer.recipient_device_id,
-                                                    session,
-                                                    devices,
-                                                )}
-                                            </h3>
-                                        </div>
-                                        {connectionState && (
-                                            <span className="request-expiry">
-                                                Browser channel {connectionState}
-                                            </span>
-                                        )}
-                                    </div>
-                                    {!run && transfer.status === 'accepted' && isSender && (
-                                        <p className="transfer-copy">
-                                            Accepted. Choose a file to start the authenticated
-                                            transfer; its name and size stay private until then.
-                                        </p>
-                                    )}
-                                    {!run && transfer.status === 'accepted' && !isSender && (
-                                        <p className="transfer-copy">
-                                            Accepted. Waiting for the sender to choose a file and
-                                            open the secure channel.
-                                        </p>
-                                    )}
-                                    {(!run || transfer.status !== 'accepted') && (
-                                        <p className="transfer-copy">
-                                            Generic control-plane offer created{' '}
-                                            {formatDate(transfer.created_at)}. File metadata is not
-                                            part of this request.
-                                        </p>
-                                    )}
-                                    {run?.fileName && (
-                                        <p className="transfer-copy">
-                                            <strong>{run.fileName}</strong>
-                                            {run.fileSize !== undefined &&
-                                                ` · ${formatBytes(run.fileSize)}`}
-                                        </p>
-                                    )}
-                                    {run && run.state !== 'idle' && (
-                                        <div
-                                            className="transfer-progress"
-                                            role="status"
-                                            aria-live="polite"
-                                        >
-                                            <div className="trusted-request-heading">
+                {otherDevices.length === 0 && (
+                    <p className="inline-message inline-message-neutral" role="status">
+                        No other trusted browsers are online right now.
+                    </p>
+                )}
+                {incomingOffers.length > 0 && (
+                    <div className="transfer-group" aria-labelledby="incoming-offers-title">
+                        <div className="transfer-group-heading">
+                            <div>
+                                <p className="request-label">Incoming</p>
+                                <h3 id="incoming-offers-title">Incoming transfer requests</h3>
+                            </div>
+                            <span className="request-expiry">{incomingOffers.length}</span>
+                        </div>
+                        <div className="transfer-list">
+                            {incomingOffers.map((transfer) => {
+                                const busy = busyTransferId === transfer.transfer_id;
+                                return (
+                                    <article className="transfer-card" key={transfer.transfer_id}>
+                                        <div className="trusted-request-heading">
+                                            <div>
                                                 <span className="request-label">
-                                                    {fileTransferStateLabel(run.state)}
+                                                    From{' '}
+                                                    {deviceName(
+                                                        transfer.sender_device_id,
+                                                        session,
+                                                        devices,
+                                                    )}
                                                 </span>
-                                                <span className="request-expiry">
-                                                    {progressPercent}%
-                                                    {progress &&
-                                                        ` · ${formatBytes(progress.bytesTransferred)} of ${formatBytes(progress.totalBytes)}`}
-                                                </span>
+                                                <h3>Transfer request</h3>
                                             </div>
-                                            <progress
-                                                max={progressMax}
-                                                value={progressValue}
-                                                aria-label="Transfer progress"
-                                                style={{ width: '100%' }}
-                                            />
-                                            {run.error && (
-                                                <p
-                                                    className="inline-message inline-message-error"
-                                                    role="alert"
-                                                >
-                                                    {run.error}
-                                                </p>
-                                            )}
+                                            <span className="request-expiry">
+                                                Expires {formatDate(transfer.expires_at)}
+                                            </span>
                                         </div>
-                                    )}
-                                    {run?.receivedFile?.downloadUrl &&
-                                        run.state === 'completed' && (
-                                            <div className="request-actions">
-                                                <a
-                                                    className="button button-primary"
-                                                    href={run.receivedFile.downloadUrl}
-                                                    download={run.receivedFile.fileName}
-                                                >
-                                                    Download verified file
-                                                </a>
-                                            </div>
-                                        )}
-                                    <div className="request-actions">
-                                        {isSender && transfer.status === 'accepted' && (
-                                            <label
+                                        <p className="transfer-copy">
+                                            The sender has not shared file details yet. Accept to
+                                            open the encrypted browser channel.
+                                        </p>
+                                        <div className="request-actions">
+                                            <button
                                                 className="button button-primary"
-                                                htmlFor={`transfer-file-${transfer.transfer_id}`}
+                                                type="button"
+                                                onClick={() => void handleAccept(transfer)}
+                                                disabled={busy}
                                             >
-                                                {canChooseFile ? 'Choose file' : 'File selected'}
-                                                <input
-                                                    id={`transfer-file-${transfer.transfer_id}`}
-                                                    type="file"
-                                                    aria-label="File to send"
-                                                    onChange={(event) => {
-                                                        const file = event.currentTarget.files?.[0];
-                                                        event.currentTarget.value = '';
-                                                        handleFileSelected(transfer, file);
-                                                    }}
-                                                    disabled={!canChooseFile}
-                                                    style={{
-                                                        position: 'absolute',
-                                                        width: 1,
-                                                        height: 1,
-                                                        overflow: 'hidden',
-                                                        clip: 'rect(0 0 0 0)',
-                                                    }}
-                                                />
-                                            </label>
-                                        )}
-                                        {canCancel && (
+                                                {busy ? 'Opening…' : 'Accept transfer'}
+                                            </button>
                                             <button
                                                 className="button button-danger"
                                                 type="button"
-                                                onClick={() => void handleCancel(transfer)}
+                                                onClick={() => void handleReject(transfer)}
                                                 disabled={busy}
                                             >
-                                                Cancel
+                                                Reject
                                             </button>
-                                        )}
-                                    </div>
-                                </article>
-                            );
-                        })}
+                                        </div>
+                                    </article>
+                                );
+                            })}
+                        </div>
                     </div>
                 )}
-            </div>
-        </section>
+                <div className="transfer-group" aria-labelledby="activity-title">
+                    <div className="transfer-group-heading">
+                        <div>
+                            <p className="request-label">Activity</p>
+                            <h3 id="activity-title">Your transfers</h3>
+                        </div>
+                        <button
+                            className="button button-small"
+                            type="button"
+                            onClick={() => void refresh()}
+                        >
+                            Refresh
+                        </button>
+                    </div>
+                    {transfers.length === 0 ? (
+                        <div className="empty-state">
+                            <span className="empty-glyph" aria-hidden="true">
+                                ⌁
+                            </span>
+                            <strong>No transfers yet</strong>
+                            <p>Choose an online browser to start a transfer request.</p>
+                        </div>
+                    ) : (
+                        <div className="transfer-list">
+                            {transfers.map((transfer) => {
+                                const busy = busyTransferId === transfer.transfer_id;
+                                const connectionState = connectionStates[transfer.transfer_id];
+                                const isParticipant =
+                                    transfer.sender_device_id === session?.device_id ||
+                                    transfer.recipient_device_id === session?.device_id;
+                                const run = transferRuns[transfer.transfer_id];
+                                const isSender = transfer.sender_device_id === session?.device_id;
+                                const runHasEnded =
+                                    run !== undefined &&
+                                    ['completed', 'cancelled', 'closed'].includes(run.state);
+                                const canChooseFile =
+                                    isSender &&
+                                    transfer.status === 'accepted' &&
+                                    !busy &&
+                                    (!run ||
+                                        (run.state === 'failed' &&
+                                            !sessionsRef.current.has(transfer.transfer_id)));
+                                const canCancel =
+                                    isParticipant &&
+                                    [
+                                        'offered',
+                                        'accepted',
+                                        'negotiating',
+                                        'connected',
+                                        'transferring',
+                                    ].includes(transfer.status) &&
+                                    !runHasEnded;
+                                const progress = run?.progress ?? null;
+                                const progressPercent = transferProgressPercent(
+                                    progress,
+                                    run?.state,
+                                );
+                                const progressMax = Math.max(1, progress?.totalBytes ?? 1);
+                                const progressValue = Math.min(
+                                    progressMax,
+                                    progress?.bytesTransferred ??
+                                        (run?.state === 'completed' ? 1 : 0),
+                                );
+                                return (
+                                    <article className="transfer-card" key={transfer.transfer_id}>
+                                        <div className="trusted-request-heading">
+                                            <div>
+                                                <span className="request-label">
+                                                    {transferStatusLabel(transfer.status)}
+                                                </span>
+                                                <h3>
+                                                    {deviceName(
+                                                        transfer.sender_device_id,
+                                                        session,
+                                                        devices,
+                                                    )}{' '}
+                                                    →{' '}
+                                                    {deviceName(
+                                                        transfer.recipient_device_id,
+                                                        session,
+                                                        devices,
+                                                    )}
+                                                </h3>
+                                            </div>
+                                            {connectionState && (
+                                                <span className="request-expiry">
+                                                    {connectionStateLabel(connectionState)}
+                                                </span>
+                                            )}
+                                        </div>
+                                        {!run && transfer.status === 'accepted' && isSender && (
+                                            <p className="transfer-copy">
+                                                Accepted. Choose a file to start the encrypted
+                                                transfer; its name and size stay private until then.
+                                            </p>
+                                        )}
+                                        {!run && transfer.status === 'accepted' && !isSender && (
+                                            <p className="transfer-copy">
+                                                Accepted. Waiting for the sender to choose a file
+                                                and open the encrypted browser channel.
+                                            </p>
+                                        )}
+                                        {(!run || transfer.status !== 'accepted') && (
+                                            <p className="transfer-copy">
+                                                Generic control-plane offer created{' '}
+                                                {formatDate(transfer.created_at)}. File metadata is
+                                                not part of this request.
+                                            </p>
+                                        )}
+                                        {run?.fileName && (
+                                            <p className="transfer-copy">
+                                                <strong>{run.fileName}</strong>
+                                                {run.fileSize !== undefined &&
+                                                    ` · ${formatBytes(run.fileSize)}`}
+                                            </p>
+                                        )}
+                                        {run && run.state !== 'idle' && (
+                                            <div
+                                                className="transfer-progress"
+                                                role="status"
+                                                aria-live="polite"
+                                            >
+                                                <div className="trusted-request-heading">
+                                                    <span className="request-label">
+                                                        {fileTransferStateLabel(run.state)}
+                                                    </span>
+                                                    <span className="request-expiry">
+                                                        {progressPercent}%
+                                                        {progress &&
+                                                            ` · ${formatBytes(progress.bytesTransferred)} of ${formatBytes(progress.totalBytes)}`}
+                                                    </span>
+                                                </div>
+                                                <progress
+                                                    max={progressMax}
+                                                    value={progressValue}
+                                                    aria-label="Transfer progress"
+                                                    style={{ width: '100%' }}
+                                                />
+                                                {run.error && (
+                                                    <p
+                                                        className="inline-message inline-message-error"
+                                                        role="alert"
+                                                    >
+                                                        {run.error}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
+                                        {run?.receivedFile?.downloadUrl &&
+                                            run.state === 'completed' && (
+                                                <div className="request-actions">
+                                                    <button
+                                                        className="button button-primary"
+                                                        type="button"
+                                                        onClick={() =>
+                                                            requestDownload(
+                                                                run.receivedFile as ReceivedFile,
+                                                            )
+                                                        }
+                                                    >
+                                                        Download verified file
+                                                    </button>
+                                                </div>
+                                            )}
+                                        <div className="request-actions">
+                                            {isSender && transfer.status === 'accepted' && (
+                                                <label
+                                                    className="button button-primary"
+                                                    htmlFor={`transfer-file-${transfer.transfer_id}`}
+                                                >
+                                                    {canChooseFile
+                                                        ? 'Choose file'
+                                                        : 'File selected'}
+                                                    <input
+                                                        id={`transfer-file-${transfer.transfer_id}`}
+                                                        type="file"
+                                                        aria-label="File to send"
+                                                        onChange={(event) => {
+                                                            const file =
+                                                                event.currentTarget.files?.[0];
+                                                            event.currentTarget.value = '';
+                                                            handleFileSelected(transfer, file);
+                                                        }}
+                                                        disabled={!canChooseFile}
+                                                        style={{
+                                                            position: 'absolute',
+                                                            width: 1,
+                                                            height: 1,
+                                                            overflow: 'hidden',
+                                                            clip: 'rect(0 0 0 0)',
+                                                        }}
+                                                    />
+                                                </label>
+                                            )}
+                                            {canCancel && (
+                                                <button
+                                                    className="button button-danger"
+                                                    type="button"
+                                                    onClick={() => void handleCancel(transfer)}
+                                                    disabled={busy}
+                                                >
+                                                    Cancel
+                                                </button>
+                                            )}
+                                        </div>
+                                    </article>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            </section>
+            {downloadConfirmation && (
+                <ConfirmationDialog
+                    title={`Download ${downloadConfirmation.fileName}?`}
+                    description={`This file was verified over the secure channel. The browser will save ${formatBytes(downloadConfirmation.byteCount)} to your downloads folder.`}
+                    confirmLabel="Download file"
+                    onCancel={() => setDownloadConfirmation(null)}
+                    onConfirm={confirmDownload}
+                />
+            )}
+        </>
     );
 }
 
