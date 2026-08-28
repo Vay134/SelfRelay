@@ -35,12 +35,14 @@ PRESENCE_HEARTBEAT_TIMEOUT = timedelta(seconds=45)
 MAX_WEBSOCKET_MESSAGE_BYTES = 16 * 1024
 MAX_SIGNALING_SDP_BYTES = 12 * 1024
 MAX_SIGNALING_ICE_CANDIDATE_BYTES = 2048
+MAX_SIGNALING_HANDSHAKE_BYTES = 8 * 1024
 MAX_SIGNALING_ICE_CANDIDATES = 64
 MAX_SIGNALING_MESSAGES = 128
 
 # Descriptive aliases for callers that name limits by their payload type.
 MAX_SDP_BYTES = MAX_SIGNALING_SDP_BYTES
 MAX_ICE_CANDIDATE_BYTES = MAX_SIGNALING_ICE_CANDIDATE_BYTES
+MAX_HANDSHAKE_BYTES = MAX_SIGNALING_HANDSHAKE_BYTES
 MAX_ICE_CANDIDATES_PER_TRANSFER = MAX_SIGNALING_ICE_CANDIDATES
 
 PRESENCE_EVENT_TYPE = "presence"
@@ -57,11 +59,15 @@ WEBSOCKET_CLOSE_REPLACED = 4001
 SIGNALING_OFFER_MESSAGE_TYPE = "sdp_offer"
 SIGNALING_ANSWER_MESSAGE_TYPE = "sdp_answer"
 SIGNALING_ICE_MESSAGE_TYPE = "ice_candidate"
+SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE = "handshake_offer"
+SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE = "handshake_answer"
 SIGNALING_MESSAGE_TYPES = frozenset(
     {
         SIGNALING_OFFER_MESSAGE_TYPE,
         SIGNALING_ANSWER_MESSAGE_TYPE,
         SIGNALING_ICE_MESSAGE_TYPE,
+        SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE,
+        SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
     }
 )
 SIGNALING_ACTIVE_STATUSES = frozenset(
@@ -274,7 +280,7 @@ class PresenceManager:
         connection: ActiveConnection,
         message: dict[str, object],
     ) -> bool:
-        """Validate and forward one typed SDP/ICE message to its selected peer.
+        """Validate and forward one typed signaling message to its selected peer.
 
         The current socket's authenticated account and device are always the source
         of routing.  Device identifiers supplied by the browser are accepted only
@@ -317,9 +323,25 @@ class PresenceManager:
                 negotiating = await transition(connection.account_id, transfer.id)
                 if negotiating is None:
                     return False
-        elif message_type == SIGNALING_ANSWER_MESSAGE_TYPE:
+        elif message_type in {
+            SIGNALING_ANSWER_MESSAGE_TYPE,
+            SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
+        }:
             if connection.device_id != recipient_device_id or transfer.status != "negotiating":
                 return False
+        elif message_type == SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE:
+            if connection.device_id != sender_device_id or transfer.status not in {
+                "accepted",
+                "negotiating",
+            }:
+                return False
+            if transfer.status == "accepted":
+                transition = getattr(repository, "mark_negotiating", None)
+                if not callable(transition):
+                    return False
+                negotiating = await transition(connection.account_id, transfer.id)
+                if negotiating is None:
+                    return False
         elif transfer.status not in {"accepted", "negotiating"}:
             return False
 
@@ -332,6 +354,8 @@ class PresenceManager:
                 in {
                     SIGNALING_OFFER_MESSAGE_TYPE,
                     SIGNALING_ANSWER_MESSAGE_TYPE,
+                    SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE,
+                    SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
                 }
                 else MAX_SIGNALING_ICE_CANDIDATES
             )
@@ -533,7 +557,7 @@ def _parse_signaling_message(
     message: dict[str, object],
     now: datetime,
 ) -> tuple[UUID, UUID, UUID, str] | None:
-    """Validate the small, typed envelope used for SDP and ICE forwarding."""
+    """Validate the small, typed envelope used for signaling forwarding."""
 
     message_type = message.get("type")
     if message_type not in SIGNALING_MESSAGE_TYPES:
@@ -565,6 +589,40 @@ def _parse_signaling_message(
         if not isinstance(sdp, str) or not sdp:
             return None
         if len(sdp.encode("utf-8")) > MAX_SIGNALING_SDP_BYTES:
+            return None
+    elif message_type in {
+        SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE,
+        SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
+    }:
+        if set(message) != envelope | {"handshake"}:
+            return None
+        handshake = message.get("handshake")
+        if not isinstance(handshake, dict) or set(handshake) != {"core", "signature"}:
+            return None
+        signature = handshake.get("signature")
+        core = handshake.get("core")
+        if (
+            not isinstance(signature, str)
+            or not signature
+            or len(signature.encode("utf-8")) > 256
+            or not isinstance(core, dict)
+            or not core
+            or len(json.dumps(handshake, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+            > MAX_SIGNALING_HANDSHAKE_BYTES
+        ):
+            return None
+        expected_core_type = (
+            "handshake_offer"
+            if message_type == SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE
+            else "handshake_answer"
+        )
+        if core.get("type") != expected_core_type or core.get("v") != 1:
+            return None
+        if (
+            core.get("transfer_id") != str(transfer_id)
+            or core.get("sender_device_id") != str(sender_device_id)
+            or core.get("recipient_device_id") != str(recipient_device_id)
+        ):
             return None
     else:
         allowed = envelope | {"candidate", "sdp_mid", "sdp_mline_index", "username_fragment"}
@@ -786,8 +844,10 @@ __all__ = [
     "HEARTBEAT_MESSAGE_TYPE",
     "MAX_ICE_CANDIDATE_BYTES",
     "MAX_ICE_CANDIDATES_PER_TRANSFER",
+    "MAX_HANDSHAKE_BYTES",
     "MAX_SIGNALING_ICE_CANDIDATE_BYTES",
     "MAX_SIGNALING_ICE_CANDIDATES",
+    "MAX_SIGNALING_HANDSHAKE_BYTES",
     "MAX_SIGNALING_MESSAGES",
     "MAX_SIGNALING_SDP_BYTES",
     "MAX_WEBSOCKET_MESSAGE_BYTES",
@@ -798,6 +858,8 @@ __all__ = [
     "PRESENCE_HEARTBEAT_TIMEOUT",
     "PresenceManager",
     "SIGNALING_ANSWER_MESSAGE_TYPE",
+    "SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE",
+    "SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE",
     "SIGNALING_ICE_MESSAGE_TYPE",
     "SIGNALING_MESSAGE_TYPES",
     "SIGNALING_OFFER_MESSAGE_TYPE",

@@ -1,4 +1,5 @@
 import { API_ORIGIN, apiRequest } from './pairingApi';
+import type { SignedHandshakeAnswer, SignedHandshakeOffer } from './transferProtocol';
 
 export const TRANSFER_PROTOCOL_VERSION = 1;
 export const SIGNALING_MESSAGE_TTL_MS = 30_000;
@@ -94,7 +95,32 @@ export type IceCandidateEnvelope = {
     username_fragment?: string;
 };
 
-export type SignalingEnvelope = SdpOfferEnvelope | SdpAnswerEnvelope | IceCandidateEnvelope;
+export type HandshakeOfferEnvelope = {
+    type: 'handshake_offer';
+    v: 1;
+    transfer_id: string;
+    sender_device_id: string;
+    recipient_device_id: string;
+    expires_at: number;
+    handshake: SignedHandshakeOffer;
+};
+
+export type HandshakeAnswerEnvelope = {
+    type: 'handshake_answer';
+    v: 1;
+    transfer_id: string;
+    sender_device_id: string;
+    recipient_device_id: string;
+    expires_at: number;
+    handshake: SignedHandshakeAnswer;
+};
+
+export type SignalingEnvelope =
+    | SdpOfferEnvelope
+    | SdpAnswerEnvelope
+    | IceCandidateEnvelope
+    | HandshakeOfferEnvelope
+    | HandshakeAnswerEnvelope;
 
 export type PresenceSocketMessage =
     | PresenceEvent
@@ -248,6 +274,30 @@ export function buildIceCandidateEnvelope(
     return envelope;
 }
 
+export function buildHandshakeOfferEnvelope(
+    transfer: TransferRequest,
+    handshake: SignedHandshakeOffer,
+    now = Date.now(),
+): HandshakeOfferEnvelope {
+    return {
+        type: 'handshake_offer',
+        ...envelopeFields(transfer, now),
+        handshake,
+    };
+}
+
+export function buildHandshakeAnswerEnvelope(
+    transfer: TransferRequest,
+    handshake: SignedHandshakeAnswer,
+    now = Date.now(),
+): HandshakeAnswerEnvelope {
+    return {
+        type: 'handshake_answer',
+        ...envelopeFields(transfer, now),
+        handshake,
+    };
+}
+
 export function parseSocketMessage(raw: unknown): PresenceSocketMessage | null {
     let value: unknown = raw;
     if (typeof raw === 'string') {
@@ -275,7 +325,9 @@ export function parseSocketMessage(raw: unknown): PresenceSocketMessage | null {
         messageType === 'transfer_expired' ||
         messageType === 'sdp_offer' ||
         messageType === 'sdp_answer' ||
-        messageType === 'ice_candidate'
+        messageType === 'ice_candidate' ||
+        messageType === 'handshake_offer' ||
+        messageType === 'handshake_answer'
     ) {
         return value as PresenceSocketMessage;
     }
