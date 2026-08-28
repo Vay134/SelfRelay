@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Protocol, cast
@@ -9,6 +10,8 @@ from typing import Protocol, cast
 import asyncpg  # type: ignore[import-untyped]
 
 from .repositories.base import RepositoryDatabase
+
+DATABASE_OPERATION_TIMEOUT_SECONDS = 5.0
 
 
 class _Connection(Protocol):
@@ -37,6 +40,10 @@ class _Pool(Protocol):
     def acquire(self) -> _PoolAcquireContext: ...
 
 
+class BackendUnavailableError(RuntimeError):
+    """Raised when the database provider cannot serve a bounded request."""
+
+
 class Database:
     """Own an asyncpg pool and forward parameterized queries to it."""
 
@@ -49,17 +56,29 @@ class Database:
         """Return the connected pool or raise when the boundary is unavailable."""
 
         if self._pool is None:
-            raise RuntimeError("database is not connected")
+            raise BackendUnavailableError("database is not connected")
         return self._pool
 
     async def connect(self) -> None:
         """Create the connection pool once."""
 
         if self._pool is None:
-            self._pool = cast(
-                _Pool,
-                await asyncpg.create_pool(dsn=self._database_url),
-            )
+            try:
+                self._pool = cast(
+                    _Pool,
+                    await asyncio.wait_for(
+                        asyncpg.create_pool(dsn=self._database_url),
+                        timeout=DATABASE_OPERATION_TIMEOUT_SECONDS,
+                    ),
+                )
+            except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as error:
+                raise BackendUnavailableError from error
+
+    @property
+    def is_connected(self) -> bool:
+        """Return whether a pool has been created for this database."""
+
+        return self._pool is not None
 
     async def close(self) -> None:
         """Close the pool when one has been created."""
@@ -71,17 +90,35 @@ class Database:
     async def fetch(self, query: str, *parameters: object) -> list[object]:
         """Fetch rows using asyncpg's positional query parameters."""
 
-        return await self.pool.fetch(query, *parameters)
+        try:
+            return await asyncio.wait_for(
+                self.pool.fetch(query, *parameters),
+                timeout=DATABASE_OPERATION_TIMEOUT_SECONDS,
+            )
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as error:
+            raise BackendUnavailableError from error
 
     async def execute(self, query: str, *parameters: object) -> str:
         """Execute a command using asyncpg's positional query parameters."""
 
-        return await self.pool.execute(query, *parameters)
+        try:
+            return await asyncio.wait_for(
+                self.pool.execute(query, *parameters),
+                timeout=DATABASE_OPERATION_TIMEOUT_SECONDS,
+            )
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as error:
+            raise BackendUnavailableError from error
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[RepositoryDatabase]:
         """Yield a repository database bound to one committed transaction."""
 
-        async with self.pool.acquire() as connection:
-            async with connection.transaction():
-                yield cast(RepositoryDatabase, connection)
+        try:
+            async with self.pool.acquire() as connection:
+                async with connection.transaction():
+                    yield cast(RepositoryDatabase, connection)
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, TimeoutError) as error:
+            raise BackendUnavailableError from error
+
+
+__all__ = ["BackendUnavailableError", "DATABASE_OPERATION_TIMEOUT_SECONDS", "Database"]

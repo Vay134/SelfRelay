@@ -2,7 +2,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import cast
 
+import asyncpg  # type: ignore[import-untyped]
 from fastapi import FastAPI
+from fastapi import Request as FastAPIRequest
+from fastapi.responses import JSONResponse
 
 from app.adapters import create_auth_gateway, create_turn_credential_provider
 from app.auth import (
@@ -13,7 +16,7 @@ from app.auth import (
     router,
 )
 from app.config import load_settings
-from app.database import Database
+from app.database import BackendUnavailableError, Database
 from app.device_auth import DeviceAuthService
 from app.device_auth import router as device_router
 from app.logging import configure_logging
@@ -68,7 +71,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         api_token=settings.cloudflare_turn_api_token,
     )
     database = Database(settings.database_url)
-    await database.connect()
+    try:
+        await database.connect()
+    except BackendUnavailableError:
+        # Startup continues so every request answers with a terminal 503
+        # instead of hanging while the database is unreachable.
+        pass
     application.state.database = database
     application.state.settings = settings
     runtime_metrics = RuntimeMetrics()
@@ -206,6 +214,32 @@ app = FastAPI(
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(ConfiguredCORSMiddleware)
 
+
+BACKEND_UNAVAILABLE_MESSAGE = "The secure transfer service is temporarily unavailable."
+
+
+async def _backend_unavailable(
+    _request: FastAPIRequest,
+    _error: Exception,
+) -> JSONResponse:
+    """Return one safe terminal response for provider/database failures."""
+
+    metrics = getattr(app.state, "metrics", None)
+    if isinstance(metrics, RuntimeMetrics):
+        metrics.increment("backend_unavailable")
+    return JSONResponse(
+        {"detail": BACKEND_UNAVAILABLE_MESSAGE},
+        status_code=503,
+    )
+
+
+for _provider_error in (
+    BackendUnavailableError,
+    asyncpg.PostgresError,
+    asyncpg.InterfaceError,
+):
+    app.add_exception_handler(_provider_error, _backend_unavailable)
+
 app.include_router(router)
 app.include_router(session_router)
 app.include_router(device_router)
@@ -215,6 +249,12 @@ app.include_router(transfer_router)
 app.include_router(turn_router)
 
 
-@app.get("/health", tags=["system"])
-def health() -> dict[str, str]:
+@app.get("/health", tags=["system"], response_model=None)
+async def health() -> dict[str, str] | JSONResponse:
+    database = getattr(app.state, "database", None)
+    if isinstance(database, Database) and not database.is_connected:
+        try:
+            await database.connect()
+        except BackendUnavailableError:
+            return JSONResponse({"status": "unavailable"}, status_code=503)
     return {"status": "ok"}
