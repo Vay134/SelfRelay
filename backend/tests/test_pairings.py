@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import secrets
 from collections.abc import Generator
 from typing import cast
 from uuid import UUID
@@ -16,9 +17,15 @@ from app import main
 from app.adapters import FakeAuthGateway
 from app.auth import OtpBootstrapService
 from app.config import load_settings
-from app.device_crypto import fingerprint_public_key, signed_message
+from app.device_crypto import (
+    fingerprint_public_key,
+    pairing_approval_message,
+    pairing_approval_payload,
+    signed_message,
+)
 from app.pairings import PAIRING_REQUEST_MESSAGE
-from app.repositories.models import AccountRecord, PairingRequestRecord
+from app.repositories.devices import InMemoryDeviceRepository
+from app.repositories.models import AccountRecord, DeviceRecord, PairingRequestRecord
 from app.repositories.pairings import InMemoryPairingRequestRepository
 from app.sessions import SESSION_COOKIE_NAME, hash_secret
 
@@ -76,6 +83,18 @@ def _sign(private_key: ec.EllipticCurvePrivateKey, payload: dict[str, object]) -
     return _b64(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
 
 
+def _sign_pairing(
+    private_key: ec.EllipticCurvePrivateKey,
+    payload: dict[str, object],
+) -> str:
+    der_signature = private_key.sign(
+        pairing_approval_message(payload),
+        ec.ECDSA(hashes.SHA256()),
+    )
+    r, s = decode_dss_signature(der_signature)
+    return _b64(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+
+
 def _bootstrap(client: TestClient, email: str) -> dict[str, object]:
     started = client.post("/auth/otp/start", json={"email": email})
     assert started.status_code == 202
@@ -89,8 +108,15 @@ def _bootstrap(client: TestClient, email: str) -> dict[str, object]:
     return cast(dict[str, object], verified.json())
 
 
-def _register(client: TestClient, email: str) -> dict[str, object]:
-    private_key, public_key = _new_key()
+def _register(
+    client: TestClient,
+    email: str,
+    *,
+    private_key: ec.EllipticCurvePrivateKey | None = None,
+    public_key: bytes | None = None,
+) -> dict[str, object]:
+    if private_key is None or public_key is None:
+        private_key, public_key = _new_key()
     bootstrap = _bootstrap(client, email)
     challenge = client.post(
         "/auth/devices/registration-challenge",
@@ -243,3 +269,221 @@ def awaitable_get_pairing(
     import asyncio
 
     return asyncio.run(repository.get_by_id(account_id, UUID(request_id)))
+
+
+def awaitable_get_device(
+    repository: InMemoryDeviceRepository,
+    account_id: UUID,
+    device_id: str,
+) -> DeviceRecord | None:
+    """Synchronous test helper for the async device store."""
+
+    import asyncio
+
+    return asyncio.run(repository.get_by_id(account_id, UUID(device_id)))
+
+
+def test_trusted_device_lists_and_approves_exact_requested_key(client: TestClient) -> None:
+    approving_private_key, approving_public_key = _new_key()
+    registered = _register(
+        client,
+        "pairing-owner@example.test",
+        private_key=approving_private_key,
+        public_key=approving_public_key,
+    )
+    _, requested_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "pairing-owner@example.test",
+            "public_key": _b64(requested_public_key),
+            "label": "New browser",
+        },
+    )
+    assert created.status_code == 202
+    created_body = cast(dict[str, object], created.json())
+
+    listed = client.get("/auth/pairing/requests", headers={"Origin": APP_ORIGIN})
+    assert listed.status_code == 200
+    listed_body = cast(dict[str, object], listed.json())
+    requests = cast(list[dict[str, object]], listed_body["requests"])
+    assert len(requests) == 1
+    assert requests[0]["requested_label"] == "New browser"
+    assert requests[0]["requested_fingerprint"] == _b64(
+        fingerprint_public_key(requested_public_key)
+    )
+    assert "comparison_code" not in listed.text
+    assert _b64(requested_public_key) not in listed.text
+
+    account_id = UUID(cast(str, registered["account_id"]))
+    device_body = cast(dict[str, object], registered["device"])
+    approving_device = awaitable_get_device(
+        main.app.state.device_repository,
+        account_id,
+        cast(str, device_body["device_id"]),
+    )
+    assert approving_device is not None
+    account = awaitable_get_account(main.app.state.auth_service, "pairing-owner@example.test")
+    record = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, created_body["request_id"]),
+    )
+    assert record is not None
+    approval_nonce = secrets.token_bytes(32)
+    approval_payload = pairing_approval_payload(
+        record,
+        account,
+        approving_device,
+        approval_nonce=approval_nonce,
+    )
+    approved = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/approve",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+        json={
+            "comparison_code": created_body["comparison_code"],
+            "approval_nonce": _b64(approval_nonce),
+            "signature": _sign_pairing(approving_private_key, approval_payload),
+        },
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+    stored = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, created_body["request_id"]),
+    )
+    assert stored is not None
+    assert stored.status == "approved"
+    assert stored.approved_by_device_id == approving_device.id
+    assert stored.approval_signature is not None
+
+    replay = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/approve",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+        json={
+            "comparison_code": created_body["comparison_code"],
+            "approval_nonce": _b64(approval_nonce),
+            "signature": _sign_pairing(approving_private_key, approval_payload),
+        },
+    )
+    assert replay.status_code == 401
+    assert client.get("/auth/pairing/requests").json() == {"requests": []}
+
+
+def test_pairing_code_attempts_and_signature_binding_reject_tampering(
+    client: TestClient,
+) -> None:
+    approving_private_key, approving_public_key = _new_key()
+    registered = _register(
+        client,
+        "pairing-tamper@example.test",
+        private_key=approving_private_key,
+        public_key=approving_public_key,
+    )
+    _, requested_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "pairing-tamper@example.test",
+            "public_key": _b64(requested_public_key),
+        },
+    )
+    created_body = cast(dict[str, object], created.json())
+    account_id = UUID(cast(str, registered["account_id"]))
+    account = awaitable_get_account(main.app.state.auth_service, "pairing-tamper@example.test")
+    device_body = cast(dict[str, object], registered["device"])
+    device = awaitable_get_device(
+        main.app.state.device_repository,
+        account_id,
+        cast(str, device_body["device_id"]),
+    )
+    assert device is not None
+    record = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, created_body["request_id"]),
+    )
+    assert record is not None
+    approval_nonce = secrets.token_bytes(32)
+    payload = pairing_approval_payload(record, account, device, approval_nonce=approval_nonce)
+    altered = dict(payload)
+    altered["requested_fingerprint"] = _b64(b"x" * 32)
+    tampered = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/approve",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+        json={
+            "comparison_code": created_body["comparison_code"],
+            "approval_nonce": _b64(approval_nonce),
+            "signature": _sign_pairing(approving_private_key, altered),
+        },
+    )
+    assert tampered.status_code == 401
+    after_tampered = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, created_body["request_id"]),
+    )
+    assert after_tampered is not None
+    assert after_tampered.status == "pending"
+
+    wrong_code = client.post(
+        f"/auth/pairing/requests/{created_body['request_id']}/approve",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+        json={
+            "comparison_code": "000000",
+            "approval_nonce": _b64(approval_nonce),
+            "signature": _sign_pairing(approving_private_key, payload),
+        },
+    )
+    assert wrong_code.status_code == 401
+    after_wrong_code = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, created_body["request_id"]),
+    )
+    assert after_wrong_code is not None
+    assert after_wrong_code.attempt_count == 2
+
+
+def test_rejected_pairing_is_terminal_and_requires_csrf(client: TestClient) -> None:
+    registered = _register(client, "pairing-reject@example.test")
+    _, requested_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "pairing-reject@example.test",
+            "public_key": _b64(requested_public_key),
+        },
+    )
+    request_id = cast(str, created.json()["request_id"])
+    missing_csrf = client.post(
+        f"/auth/pairing/requests/{request_id}/reject",
+        headers={"Origin": APP_ORIGIN},
+    )
+    assert missing_csrf.status_code == 403
+    rejected = client.post(
+        f"/auth/pairing/requests/{request_id}/reject",
+        headers={
+            "Origin": APP_ORIGIN,
+            "X-CSRF-Token": cast(str, registered["csrf_token"]),
+        },
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert client.get("/auth/pairing/requests").json() == {"requests": []}

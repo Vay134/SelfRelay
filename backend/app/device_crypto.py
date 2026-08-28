@@ -30,10 +30,16 @@ from cryptography.hazmat.primitives.serialization import (
     load_der_public_key,
 )
 
-from .repositories.models import DeviceChallengeRecord, DeviceRecord
+from .repositories.models import (
+    AccountRecord,
+    DeviceChallengeRecord,
+    DeviceRecord,
+    PairingRequestRecord,
+)
 
 DEVICE_PROTOCOL_VERSION = 1
 DEVICE_CHALLENGE_VERSION = 1
+PAIRING_APPROVAL_VERSION = 1
 DEVICE_SIGNATURE_BYTES = 64
 SHA256_BYTES = hashlib.sha256().digest_size
 
@@ -175,6 +181,44 @@ def registration_payload(
     }
 
 
+def pairing_approval_payload(
+    request: PairingRequestRecord,
+    account: AccountRecord,
+    approving_device: DeviceRecord,
+    *,
+    approval_nonce: bytes,
+) -> dict[str, object]:
+    """Build the canonical statement signed by a trusted approving device."""
+
+    if request.user_id != account.id or approving_device.user_id != account.id:
+        raise DeviceCryptoError("pairing records do not belong to the account")
+    if approving_device.epoch != account.device_epoch:
+        raise DeviceCryptoError("approving device is from an old epoch")
+    if len(request.request_nonce) != 32:
+        raise DeviceCryptoError("pairing request nonce must contain 256 bits")
+    if len(request.requested_fingerprint) != SHA256_BYTES:
+        raise DeviceCryptoError("requested fingerprint must be a SHA-256 digest")
+    if len(approval_nonce) != 32:
+        raise DeviceCryptoError("approval nonce must contain 256 bits")
+    return {
+        "account_device_epoch": account.device_epoch,
+        "account_id": str(account.id),
+        "approval_nonce": encode_base64url(approval_nonce),
+        "expires_at": normalize_timestamp(request.expires_at),
+        "pairing_approval_version": PAIRING_APPROVAL_VERSION,
+        "pairing_request_id": str(request.id),
+        "protocol_version": DEVICE_PROTOCOL_VERSION,
+        "requested_fingerprint": encode_base64url(request.requested_fingerprint),
+        "request_nonce": encode_base64url(request.request_nonce),
+    }
+
+
+def pairing_approval_message(payload: Mapping[str, object]) -> bytes:
+    """Add a pairing-specific domain separator to an approval statement."""
+
+    return b"e2e-secure-file-transfer/pairing-approval/v1\x00" + canonical_json_bytes(payload)
+
+
 def signed_message(payload: Mapping[str, object]) -> bytes:
     """Add a domain separator to a canonical challenge before signing."""
 
@@ -263,6 +307,7 @@ __all__ = [
     "DEVICE_CHALLENGE_VERSION",
     "DEVICE_PROTOCOL_VERSION",
     "DEVICE_SIGNATURE_BYTES",
+    "PAIRING_APPROVAL_VERSION",
     "DeviceCryptoError",
     "canonical_json_bytes",
     "canonical_public_key",
@@ -272,6 +317,8 @@ __all__ = [
     "encode_base64url",
     "fingerprint_public_key",
     "normalize_timestamp",
+    "pairing_approval_message",
+    "pairing_approval_payload",
     "p1363_to_der",
     "registration_payload",
     "signed_message",

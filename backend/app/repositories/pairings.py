@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
@@ -186,6 +187,69 @@ class PairingRequestRepository:
         row = first_row(rows)
         return None if row is None else pairing_request_from_row(row)
 
+    async def record_comparison_attempt(
+        self,
+        account_id: UUID,
+        request_id: UUID,
+        maximum_attempts: int = 10,
+    ) -> PairingRequestRecord | None:
+        """Atomically consume one comparison-code attempt for a pending request."""
+
+        if not 1 <= maximum_attempts <= 10:
+            raise ValueError("maximum pairing attempts must be between 1 and 10")
+        rows = await self._database.fetch(
+            f"""UPDATE private.pairing_requests AS request
+            SET attempt_count = request.attempt_count + 1
+            WHERE request.user_id = $1
+              AND request.id = $2
+              AND request.status = 'pending'
+              AND request.consumed_at IS NULL
+              AND request.expires_at > CURRENT_TIMESTAMP
+              AND request.attempt_count < $3
+              AND EXISTS (
+                  SELECT 1
+                  FROM private.app_users AS account
+                  WHERE account.id = request.user_id
+                    AND account.id = $1
+                    AND account.deleted_at IS NULL
+              )
+            RETURNING {_PAIRING_REQUEST_COLUMNS}""",
+            account_id,
+            request_id,
+            maximum_attempts,
+        )
+        row = first_row(rows)
+        return None if row is None else pairing_request_from_row(row)
+
+    async def reject(
+        self,
+        account_id: UUID,
+        request_id: UUID,
+    ) -> PairingRequestRecord | None:
+        """Atomically reject one unexpired pending request."""
+
+        rows = await self._database.fetch(
+            f"""UPDATE private.pairing_requests AS request
+            SET status = 'rejected'
+            WHERE request.user_id = $1
+              AND request.id = $2
+              AND request.status = 'pending'
+              AND request.consumed_at IS NULL
+              AND request.expires_at > CURRENT_TIMESTAMP
+              AND EXISTS (
+                  SELECT 1
+                  FROM private.app_users AS account
+                  WHERE account.id = request.user_id
+                    AND account.id = $1
+                    AND account.deleted_at IS NULL
+              )
+            RETURNING {_PAIRING_REQUEST_COLUMNS}""",
+            account_id,
+            request_id,
+        )
+        row = first_row(rows)
+        return None if row is None else pairing_request_from_row(row)
+
     async def consume(
         self,
         account_id: UUID,
@@ -307,6 +371,83 @@ class InMemoryPairingRequestRepository:
         with self._lock:
             self._records[record.id] = record
         return record
+
+    async def record_comparison_attempt(
+        self,
+        account_id: UUID,
+        request_id: UUID,
+        maximum_attempts: int = 10,
+    ) -> PairingRequestRecord | None:
+        """Atomically consume one comparison-code attempt for a pending request."""
+
+        if not 1 <= maximum_attempts <= 10:
+            raise ValueError("maximum pairing attempts must be between 1 and 10")
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(request_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or record.status != "pending"
+                or record.consumed_at is not None
+                or record.expires_at <= current
+                or record.attempt_count >= maximum_attempts
+            ):
+                return None
+            updated = replace(record, attempt_count=record.attempt_count + 1)
+            self._records[request_id] = updated
+            return updated
+
+    async def approve(
+        self,
+        account_id: UUID,
+        request_id: UUID,
+        approved_by_device_id: UUID,
+        approval_signature: bytes,
+    ) -> PairingRequestRecord | None:
+        """Atomically approve one unexpired pending request."""
+
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(request_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or record.status != "pending"
+                or record.consumed_at is not None
+                or record.expires_at <= current
+            ):
+                return None
+            updated = replace(
+                record,
+                status="approved",
+                approved_by_device_id=approved_by_device_id,
+                approval_signature=bytes(approval_signature),
+            )
+            self._records[request_id] = updated
+            return updated
+
+    async def reject(
+        self,
+        account_id: UUID,
+        request_id: UUID,
+    ) -> PairingRequestRecord | None:
+        """Atomically reject one unexpired pending request."""
+
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(request_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or record.status != "pending"
+                or record.consumed_at is not None
+                or record.expires_at <= current
+            ):
+                return None
+            updated = replace(record, status="rejected")
+            self._records[request_id] = updated
+            return updated
 
 
 # Keep schema terminology available to callers that use the table name.

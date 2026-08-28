@@ -16,7 +16,7 @@ from app.database import Database
 from app.device_auth import DeviceAuthService
 from app.device_auth import router as device_router
 from app.logging import configure_logging
-from app.pairings import PairingRequestService
+from app.pairings import PairingApprovalService, PairingRequestService
 from app.pairings import router as pairing_router
 from app.repositories import (
     AccountRepository,
@@ -104,6 +104,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.pairing_repository = pairing_repository
     application.state.pairing_request_service = PairingRequestService(
         account_store,
+        pairing_repository,
+    )
+    application.state.pairing_approval_service = PairingApprovalService(
+        account_store,
+        device_repository,
         pairing_repository,
     )
     application.state.device_auth_service = device_auth_service
