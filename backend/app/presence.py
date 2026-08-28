@@ -59,6 +59,8 @@ MAX_HANDSHAKE_BYTES = MAX_SIGNALING_HANDSHAKE_BYTES
 MAX_ICE_CANDIDATES_PER_TRANSFER = MAX_SIGNALING_ICE_CANDIDATES
 
 PRESENCE_EVENT_TYPE = "presence"
+CONNECTION_MODE_MESSAGE_TYPE = "connection_mode"
+CONNECTION_MODES = frozenset({"direct", "relay"})
 HEARTBEAT_MESSAGE_TYPE = "heartbeat"
 PING_MESSAGE_TYPE = "ping"
 PONG_MESSAGE_TYPE = "pong"
@@ -278,6 +280,46 @@ class PresenceManager:
         """Return the number of sockets currently registered across all accounts."""
 
         return sum(len(sockets) for sockets in self._connections.values())
+
+    async def resource_snapshot(self) -> dict[str, int]:
+        """Return coarse gauges describing socket and queue occupancy."""
+
+        async with self._lock:
+            return {
+                "active_sockets": self.active_socket_count(),
+                "active_signaling_transfers": len(self._signaling),
+                "queued_messages": sum(
+                    outbound.queue.qsize() for outbound in self._outbound.values()
+                ),
+                "queued_bytes": sum(outbound.queued_bytes for outbound in self._outbound.values()),
+            }
+
+    async def record_connection_mode(
+        self,
+        connection: ActiveConnection,
+        message: dict[str, object],
+    ) -> bool:
+        """Count one peer-reported direct or relay outcome without storing its context."""
+
+        repository = self._transfer_repository
+        mode = message.get("mode")
+        transfer_id = _canonical_uuid(message.get("transfer_id"))
+        if (
+            repository is None
+            or set(message) != {"type", "v", "transfer_id", "mode"}
+            or message.get("v") != 1
+            or mode not in CONNECTION_MODES
+            or transfer_id is None
+        ):
+            return False
+        transfer = await repository.get_by_id(connection.account_id, transfer_id)
+        if transfer is None or connection.device_id not in (
+            transfer.sender_device_id,
+            transfer.recipient_device_id,
+        ):
+            return False
+        self._metrics.increment(f"webrtc_{mode}")
+        return True
 
     async def remove(self, connection: ActiveConnection) -> bool:
         """Remove a socket only when it is still the current device socket."""
@@ -1030,6 +1072,10 @@ async def _serve_connection(
             if not await manager.forward_signaling(connection, message):
                 await _close(websocket, WEBSOCKET_CLOSE_POLICY)
                 return
+        elif message_type == CONNECTION_MODE_MESSAGE_TYPE:
+            if not await manager.record_connection_mode(connection, message):
+                await _close(websocket, WEBSOCKET_CLOSE_POLICY)
+                return
         else:
             await _close(websocket, WEBSOCKET_CLOSE_UNSUPPORTED_DATA)
             return
@@ -1141,6 +1187,8 @@ async def websocket_presence(websocket: WebSocket) -> None:
 
 __all__ = [
     "ActiveConnection",
+    "CONNECTION_MODES",
+    "CONNECTION_MODE_MESSAGE_TYPE",
     "ConnectionLimitError",
     "ConnectionManager",
     "HEARTBEAT_MESSAGE_TYPE",

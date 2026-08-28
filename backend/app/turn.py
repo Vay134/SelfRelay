@@ -16,6 +16,7 @@ from .adapters import (
     TurnCredentials,
 )
 from .auth import RATE_LIMIT_MESSAGE, RateLimiterPort
+from .metrics import RuntimeMetrics
 from .repositories.models import DeviceRecord, SessionRecord, TransferRequestRecord
 from .session_api import require_session_csrf
 from .transfers import TRANSFER_ACTIVE_STATUSES, TransferError, TransferService
@@ -73,12 +74,20 @@ class TurnCredentialService:
         rate_limiter: RateLimiterPort,
         *,
         clock: Callable[[], datetime] | None = None,
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         self._provider = provider
         self._transfer_service = transfer_service
         self._device_repository = device_repository
         self._rate_limiter = rate_limiter
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._metrics = metrics or RuntimeMetrics()
+
+    @property
+    def metrics(self) -> RuntimeMetrics:
+        """Return coarse issuance counters for this service."""
+
+        return self._metrics
 
     async def issue(
         self,
@@ -92,8 +101,10 @@ class TurnCredentialService:
         try:
             transfer = await self._transfer_service.get(session.user_id, transfer_id)
         except TransferError as error:
+            self._metrics.increment("turn_credential_denied")
             raise TurnAuthorizationError from error
         if not self._transfer_is_eligible(transfer, current, session.device_id):
+            self._metrics.increment("turn_credential_denied")
             raise TurnAuthorizationError
 
         actor = await self._device_repository.get_by_id(session.user_id, session.device_id)
@@ -107,6 +118,7 @@ class TurnCredentialService:
             peer,
             actor,
         ):
+            self._metrics.increment("turn_credential_denied")
             raise TurnAuthorizationError
 
         allowed = self._rate_limiter.allow_many(
@@ -141,10 +153,11 @@ class TurnCredentialService:
         if not isinstance(allowed, bool):
             allowed = await cast(Awaitable[bool], allowed)
         if not allowed:
+            self._metrics.increment("turn_credential_rate_limited")
             raise TurnCredentialRateLimitedError
 
         try:
-            return await self._provider.issue_credentials(
+            credentials = await self._provider.issue_credentials(
                 TurnCredentialRequest(
                     account_id=str(session.user_id),
                     device_id=str(session.device_id),
@@ -153,7 +166,10 @@ class TurnCredentialService:
                 )
             )
         except TurnCredentialProviderError as error:
+            self._metrics.increment("turn_provider_failed")
             raise TurnProviderUnavailableError from error
+        self._metrics.increment("turn_credential_issued")
+        return credentials
 
     @staticmethod
     def _transfer_is_eligible(

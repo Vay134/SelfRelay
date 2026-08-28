@@ -17,6 +17,7 @@ from app.database import Database
 from app.device_auth import DeviceAuthService
 from app.device_auth import router as device_router
 from app.logging import configure_logging
+from app.metrics import RuntimeMetrics
 from app.pairings import (
     PairingApprovalService,
     PairingApprovalStore,
@@ -70,6 +71,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     await database.connect()
     application.state.database = database
     application.state.settings = settings
+    runtime_metrics = RuntimeMetrics()
+    application.state.metrics = runtime_metrics
     application.state.auth_gateway = auth_gateway
     account_store = (
         InMemoryAccountStore()
@@ -127,6 +130,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         device_repository,
         session_repository,
         transfer_repository,
+        metrics=runtime_metrics,
     )
     device_auth_service = DeviceAuthService(
         account_store,
@@ -151,6 +155,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         transfer_repository,
         presence_manager,
         device_repository,
+        metrics=runtime_metrics,
     )
     application.state.transfer_service = transfer_service
     application.state.turn_credential_provider = turn_credential_provider
@@ -159,6 +164,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         transfer_service,
         device_repository,
         rate_limiter,
+        metrics=runtime_metrics,
     )
     application.state.device_repository = device_repository
     application.state.device_challenge_repository = challenge_repository
