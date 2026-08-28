@@ -5,6 +5,7 @@ import {
     buildIceCandidateEnvelope,
     buildSdpAnswerEnvelope,
     buildSdpOfferEnvelope,
+    getTransferPeerDeviceKey,
     issueWebSocketTicket,
     websocketUrl,
     type TransferRequest,
@@ -26,6 +27,27 @@ afterEach(() => {
 });
 
 describe('transfer API boundaries', () => {
+    it('fetches only the authenticated transfer peer key', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    device_id: transfer.recipient_device_id,
+                    public_key_spki: 'spki-base64url',
+                }),
+                { status: 200 },
+            ),
+        );
+
+        await expect(getTransferPeerDeviceKey(transfer.transfer_id)).resolves.toEqual({
+            device_id: transfer.recipient_device_id,
+            public_key_spki: 'spki-base64url',
+        });
+        expect(fetchMock.mock.calls[0]?.[0]).toBe(
+            `http://localhost:8000/auth/transfers/${transfer.transfer_id}/peer-key`,
+        );
+        expect(fetchMock.mock.calls[0]?.[1]?.credentials).toBe('include');
+    });
+
     it('uses the current session CSRF token when issuing a socket ticket', async () => {
         const fetchMock = vi.spyOn(globalThis, 'fetch');
         fetchMock

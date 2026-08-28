@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from .presence import PresenceManager
-from .repositories.models import SessionRecord, TransferRequestRecord
+from .device_crypto import encode_base64url
+from .repositories.models import DeviceRecord, SessionRecord, TransferRequestRecord
 from .security import check_optional_origin
 from .session_api import get_authenticated_session, require_session_csrf
 
@@ -20,6 +21,7 @@ TRANSFER_REQUEST_LIFETIME = timedelta(minutes=10)
 TRANSFER_ACTIVE_STATUSES = frozenset(
     {"offered", "accepted", "negotiating", "connected", "transferring"}
 )
+TRANSFER_PEER_KEY_STATUSES = frozenset({"accepted", "negotiating"})
 
 TRANSFER_UNAVAILABLE_MESSAGE = "The transfer is unavailable."
 TRANSFER_INVALID_MESSAGE = "The transfer request is invalid."
@@ -74,7 +76,7 @@ class TransferRepositoryPort(Protocol):
 
 
 class DeviceLookupPort(Protocol):
-    async def get_by_id(self, account_id: UUID, device_id: UUID) -> object | None: ...
+    async def get_by_id(self, account_id: UUID, device_id: UUID) -> DeviceRecord | None: ...
 
 
 class TransferError(ValueError):
@@ -259,6 +261,43 @@ class TransferService:
             raise TransferError("transfer is unavailable")
         return record
 
+    async def get_peer_device_key(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        actor_device_id: UUID,
+        epoch: int | None = None,
+    ) -> DeviceRecord:
+        """Return the other current-epoch device for an eligible transfer."""
+
+        current = await self._current_or_expire(account_id, transfer_id)
+        if current is None or current.status not in TRANSFER_PEER_KEY_STATUSES:
+            raise TransferError("transfer is unavailable")
+        if actor_device_id not in (current.sender_device_id, current.recipient_device_id):
+            raise TransferError("transfer is unavailable")
+        if self._device_repository is None:
+            raise TransferError("transfer devices are unavailable")
+
+        actor = await self._device_repository.get_by_id(account_id, actor_device_id)
+        peer_device_id = (
+            current.recipient_device_id
+            if actor_device_id == current.sender_device_id
+            else current.sender_device_id
+        )
+        peer = await self._device_repository.get_by_id(account_id, peer_device_id)
+        if (
+            actor is None
+            or peer is None
+            or actor.user_id != account_id
+            or peer.user_id != account_id
+            or actor.status != "active"
+            or peer.status != "active"
+            or actor.epoch != peer.epoch
+            or (epoch is not None and (actor.epoch != epoch or peer.epoch != epoch))
+        ):
+            raise TransferError("transfer devices are unavailable")
+        return peer
+
     async def list(self, account_id: UUID) -> list[TransferRequestRecord]:
         """Return account transfers, expiring stale active records as encountered."""
 
@@ -373,6 +412,15 @@ def _public_response(record: TransferRequestRecord, action: str) -> dict[str, ob
     }
 
 
+def public_peer_device_key(device: DeviceRecord) -> dict[str, object]:
+    """Serialize only the peer identifier and its public signing key."""
+
+    return {
+        "device_id": str(device.id),
+        "public_key_spki": encode_base64url(device.signing_public_key_spki),
+    }
+
+
 def _unavailable(error: Exception) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -440,6 +488,27 @@ async def get_transfer(
     except TransferError as error:
         raise _unavailable(error) from error
     return public_transfer(record)
+
+
+@router.get("/auth/transfers/{transfer_id}/peer-key")
+async def get_transfer_peer_key(
+    transfer_id: UUID,
+    request: Request,
+    session: Annotated[SessionRecord, Depends(get_authenticated_session)],
+) -> dict[str, object]:
+    """Return the participating peer's current public signing key."""
+
+    check_optional_origin(request)
+    try:
+        device = await _service_from_request(request).get_peer_device_key(
+            session.user_id,
+            transfer_id,
+            session.device_id,
+            session.epoch,
+        )
+    except TransferError as error:
+        raise _unavailable(error) from error
+    return public_peer_device_key(device)
 
 
 @router.post("/auth/transfers/{transfer_id}/accept")
@@ -529,6 +598,7 @@ async def expire_transfer(
 __all__ = [
     "TRANSFER_ACTIVE_STATUSES",
     "TRANSFER_INVALID_MESSAGE",
+    "TRANSFER_PEER_KEY_STATUSES",
     "TRANSFER_PROTOCOL_VERSION",
     "TRANSFER_REQUEST_LIFETIME",
     "TRANSFER_UNAVAILABLE_MESSAGE",
@@ -538,8 +608,10 @@ __all__ = [
     "TransferService",
     "create_transfer_offer",
     "get_transfer",
+    "get_transfer_peer_key",
     "list_transfers",
     "public_transfer",
+    "public_peer_device_key",
     "reject_transfer",
     "router",
     "transfer_notification",

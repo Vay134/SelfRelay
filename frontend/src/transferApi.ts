@@ -30,6 +30,11 @@ export type TransferRequest = {
     expires_at: string;
 };
 
+export type TransferPeerDeviceKey = {
+    device_id: string;
+    public_key_spki: string;
+};
+
 export type WebSocketTicket = {
     ticket: string;
     ticket_id: string;
@@ -159,6 +164,12 @@ export function rejectTransfer(transferId: string): Promise<TransferRequest> {
 
 export function cancelTransfer(transferId: string): Promise<TransferRequest> {
     return transferAction(transferId, 'cancel');
+}
+
+export function getTransferPeerDeviceKey(transferId: string): Promise<TransferPeerDeviceKey> {
+    return apiRequest<TransferPeerDeviceKey>(
+        `/auth/transfers/${encodeURIComponent(transferId)}/peer-key`,
+    );
 }
 
 export function websocketUrl(ticket: string): string {

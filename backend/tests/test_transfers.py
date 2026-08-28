@@ -217,6 +217,66 @@ def test_stale_offer_expires_and_oversized_sdp_is_rejected() -> None:
     asyncio.run(exercise())
 
 
+def test_peer_device_key_requires_an_eligible_participant_and_current_epoch() -> None:
+    async def exercise() -> None:
+        account_id = uuid4()
+        foreign_account_id = uuid4()
+        sender_id = uuid4()
+        recipient_id = uuid4()
+        foreign_device_id = uuid4()
+        devices = Devices(
+            [
+                _device(account_id, sender_id),
+                _device(account_id, recipient_id),
+                _device(foreign_account_id, foreign_device_id),
+            ]
+        )
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        repository = InMemoryTransferRequestRepository(devices, clock=lambda: now)
+        service = TransferService(repository, device_repository=devices, clock=lambda: now)
+
+        offered = await service.create_offer(account_id, sender_id, recipient_id)
+        with pytest.raises(TransferError):
+            await service.get_peer_device_key(account_id, offered.id, sender_id, 0)
+
+        accepted = await service.accept(account_id, offered.id, recipient_id)
+        assert accepted.status == "accepted"
+        peer = await service.get_peer_device_key(account_id, accepted.id, sender_id, 0)
+        assert peer.id == recipient_id
+        assert (
+            await service.get_peer_device_key(account_id, accepted.id, recipient_id, 0)
+        ).id == sender_id
+
+        with pytest.raises(TransferError):
+            await service.get_peer_device_key(
+                account_id,
+                accepted.id,
+                foreign_device_id,
+                0,
+            )
+        with pytest.raises(TransferError):
+            await service.get_peer_device_key(account_id, accepted.id, sender_id, 1)
+
+        negotiating = await repository.mark_negotiating(account_id, accepted.id)
+        assert negotiating is not None
+        assert (
+            await service.get_peer_device_key(account_id, negotiating.id, sender_id, 0)
+        ).id == recipient_id
+
+        expired = await repository.create(
+            account_id,
+            sender_id,
+            recipient_id,
+            1,
+            now - timedelta(seconds=1),
+        )
+        await repository.accept(account_id, expired.id, recipient_id)
+        with pytest.raises(TransferError):
+            await service.get_peer_device_key(account_id, expired.id, sender_id, 0)
+
+    asyncio.run(exercise())
+
+
 def test_terminal_transfers_reject_replay_and_foreign_cancellation() -> None:
     async def exercise() -> None:
         account_id = uuid4()
