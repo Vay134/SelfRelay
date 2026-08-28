@@ -192,7 +192,8 @@ export function sanitizeFileName(value: unknown): string {
     return result || 'download';
 }
 
-function sanitizeMediaType(value: unknown): string {
+/** Keep the MIME hint within the token grammar accepted by Blob and UI text. */
+export function sanitizeMediaType(value: unknown): string {
     if (typeof value !== 'string') {
         return 'application/octet-stream';
     }
@@ -200,7 +201,7 @@ function sanitizeMediaType(value: unknown): string {
     if (
         candidate.length === 0 ||
         utf8ByteLength(candidate) > MAX_MEDIA_TYPE_BYTES ||
-        !/^[\x20-\x7e]+$/u.test(candidate)
+        !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/u.test(candidate)
     ) {
         return 'application/octet-stream';
     }
