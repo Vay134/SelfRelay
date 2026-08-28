@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import secrets
+import threading
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime
 from uuid import UUID
 
 from .base import RepositoryDatabase, as_row, first_row, required_row
@@ -451,6 +455,371 @@ class TransferRequestRepository:
         """Compatibility name for callers that use ``by_account`` terminology."""
 
         return await self.list_for_account(account_id)
+
+
+class InMemoryTransferRequestRepository:
+    """Explicit test-only transfer repository with account-scoped operations."""
+
+    def __init__(
+        self,
+        device_repository: object | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._records: dict[UUID, TransferRequestRecord] = {}
+        self._device_repository = device_repository
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._lock = threading.Lock()
+
+    async def get_by_id(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        with self._lock:
+            record = self._records.get(transfer_id)
+            return record if record is not None and record.user_id == account_id else None
+
+    async def list_for_account(self, account_id: UUID) -> list[TransferRequestRecord]:
+        with self._lock:
+            records = [record for record in self._records.values() if record.user_id == account_id]
+        return sorted(records, key=lambda record: record.created_at, reverse=True)
+
+    async def list_for_device(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+    ) -> list[TransferRequestRecord]:
+        records = await self.list_for_account(account_id)
+        return [
+            record
+            for record in records
+            if record.sender_device_id == device_id or record.recipient_device_id == device_id
+        ]
+
+    async def create(
+        self,
+        account_id: UUID,
+        sender_device_id: UUID,
+        recipient_device_id: UUID,
+        protocol_version: int,
+        expires_at: datetime,
+    ) -> TransferRequestRecord:
+        if sender_device_id == recipient_device_id:
+            raise ValueError("sender and recipient must differ")
+        if expires_at.tzinfo is None:
+            raise ValueError("transfer expiry must be timezone-aware")
+        if self._device_repository is not None:
+            lookup = getattr(self._device_repository, "get_by_id", None)
+            if not callable(lookup):
+                raise RuntimeError("device repository cannot validate transfer devices")
+            sender = await lookup(account_id, sender_device_id)
+            recipient = await lookup(account_id, recipient_device_id)
+            if (
+                sender is None
+                or recipient is None
+                or sender.status != "active"
+                or recipient.status != "active"
+                or sender.epoch != recipient.epoch
+            ):
+                raise ValueError("transfer devices are unavailable")
+        created_at = self._now()
+        record = TransferRequestRecord(
+            id=UUID(bytes=secrets.token_bytes(16)),
+            user_id=account_id,
+            sender_device_id=sender_device_id,
+            recipient_device_id=recipient_device_id,
+            protocol_version=protocol_version,
+            status="offered",
+            created_at=created_at,
+            expires_at=expires_at,
+            accepted_at=None,
+            completed_at=None,
+            failure_code=None,
+            relay_used=False,
+        )
+        with self._lock:
+            self._records[record.id] = record
+        return record
+
+    async def transition(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        from_status: str,
+        to_status: str,
+    ) -> TransferRequestRecord | None:
+        allowed_targets = _VALID_TRANSITIONS.get(from_status)
+        if allowed_targets is None or to_status not in allowed_targets:
+            return None
+        current = self._now()
+        with self._lock:
+            record = self._records.get(transfer_id)
+            if record is None or record.user_id != account_id or record.status != from_status:
+                return None
+            if to_status == "expired":
+                if record.expires_at > current:
+                    return None
+            elif record.expires_at <= current:
+                return None
+            updated = self._updated_record(record, to_status)
+            self._records[transfer_id] = updated
+            return updated
+
+    async def accept(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        recipient_device_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self._actor_transition(
+            account_id,
+            transfer_id,
+            from_statuses=("offered",),
+            to_status="accepted",
+            actor_device_id=recipient_device_id,
+            recipient_only=True,
+        )
+
+    async def reject(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        recipient_device_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self._actor_transition(
+            account_id,
+            transfer_id,
+            from_statuses=("offered",),
+            to_status="rejected",
+            actor_device_id=recipient_device_id,
+            recipient_only=True,
+        )
+
+    async def cancel(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        actor_device_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self._actor_transition(
+            account_id,
+            transfer_id,
+            from_statuses=_ACTIVE_STATUSES,
+            to_status="cancelled",
+            actor_device_id=actor_device_id,
+            recipient_only=False,
+        )
+
+    async def expire(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        expired_offer = await self.transition(account_id, transfer_id, "offered", "expired")
+        return expired_offer or await self._expire_active(account_id, transfer_id)
+
+    async def mark_negotiating(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.transition(account_id, transfer_id, "accepted", "negotiating")
+
+    async def mark_connected(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.transition(account_id, transfer_id, "negotiating", "connected")
+
+    async def mark_transferring(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.transition(account_id, transfer_id, "connected", "transferring")
+
+    async def complete(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.transition(account_id, transfer_id, "transferring", "completed")
+
+    async def fail(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        failure_code: str,
+        actor_device_id: UUID | None = None,
+    ) -> TransferRequestRecord | None:
+        if actor_device_id is None:
+            for status_value in _FAILABLE_STATUSES:
+                result = await self.transition(account_id, transfer_id, status_value, "failed")
+                if result is not None:
+                    updated = replace(result, failure_code=failure_code)
+                    with self._lock:
+                        self._records[updated.id] = updated
+                    return updated
+            return None
+        return await self._actor_transition(
+            account_id,
+            transfer_id,
+            from_statuses=_FAILABLE_STATUSES,
+            to_status="failed",
+            actor_device_id=actor_device_id,
+            recipient_only=False,
+            failure_code=failure_code,
+        )
+
+    async def mark_expired(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.expire(account_id, transfer_id)
+
+    async def mark_complete(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.complete(account_id, transfer_id)
+
+    async def mark_failed(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        failure_code: str,
+        actor_device_id: UUID | None = None,
+    ) -> TransferRequestRecord | None:
+        return await self.fail(account_id, transfer_id, failure_code, actor_device_id)
+
+    async def mark_relay_used(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        current = self._now()
+        with self._lock:
+            record = self._records.get(transfer_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or record.status not in _ACTIVE_STATUSES
+                or record.expires_at <= current
+            ):
+                return None
+            updated = replace(record, relay_used=True)
+            self._records[transfer_id] = updated
+            return updated
+
+    async def set_relay_used(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        return await self.mark_relay_used(account_id, transfer_id)
+
+    async def update_status(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        from_status: str,
+        to_status: str,
+    ) -> TransferRequestRecord | None:
+        return await self.transition(account_id, transfer_id, from_status, to_status)
+
+    async def list_by_account(self, account_id: UUID) -> list[TransferRequestRecord]:
+        return await self.list_for_account(account_id)
+
+    async def _actor_transition(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+        *,
+        from_statuses: tuple[str, ...],
+        to_status: str,
+        actor_device_id: UUID,
+        recipient_only: bool,
+        failure_code: str | None = None,
+    ) -> TransferRequestRecord | None:
+        now = self._now()
+        if self._device_repository is not None:
+            lookup = getattr(self._device_repository, "get_by_id", None)
+            if not callable(lookup):
+                return None
+            actor = await lookup(account_id, actor_device_id)
+            if actor is None or getattr(actor, "status", None) != "active":
+                return None
+        with self._lock:
+            record = self._records.get(transfer_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or record.status not in from_statuses
+                or record.expires_at <= now
+                or (recipient_only and record.recipient_device_id != actor_device_id)
+                or (
+                    not recipient_only
+                    and actor_device_id not in (record.sender_device_id, record.recipient_device_id)
+                )
+            ):
+                return None
+            updated = self._updated_record(record, to_status, failure_code=failure_code)
+            self._records[transfer_id] = updated
+            return updated
+
+    async def _expire_active(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None:
+        now = self._now()
+        with self._lock:
+            record = self._records.get(transfer_id)
+            if (
+                record is None
+                or record.user_id != account_id
+                or record.status not in _ACTIVE_STATUSES
+                or record.expires_at > now
+            ):
+                return None
+            updated = self._updated_record(record, "expired")
+            self._records[transfer_id] = updated
+            return updated
+
+    @staticmethod
+    def _updated_record(
+        record: TransferRequestRecord,
+        status: str,
+        *,
+        failure_code: str | None = None,
+    ) -> TransferRequestRecord:
+        return replace(
+            record,
+            status=status,
+            accepted_at=(
+                record.accepted_at
+                if record.accepted_at is not None
+                else datetime.now(record.created_at.tzinfo)
+                if status in {"accepted", "cancelled"}
+                else None
+            ),
+            completed_at=(
+                datetime.now(record.created_at.tzinfo)
+                if status == "completed"
+                else record.completed_at
+            ),
+            failure_code=failure_code,
+        )
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if value.tzinfo is None:
+            raise ValueError("transfer timestamps must be timezone-aware")
+        return value.astimezone(UTC)
 
 
 # Keep schema terminology available to callers that use the table name.

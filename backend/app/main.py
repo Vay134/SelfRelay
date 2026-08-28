@@ -34,18 +34,22 @@ from app.repositories import (
     InMemoryDeviceRepository,
     InMemoryPairingRequestRepository,
     InMemorySecurityEventRepository,
+    InMemoryTransferRequestRepository,
     InMemoryWebSocketTicketRepository,
     PairingRequestRepository,
     PersistentRateLimiter,
     RateLimitBucketRepository,
     SecurityEventRepository,
     SessionRepository,
+    TransferRequestRepository,
     WebSocketTicketRepository,
 )
 from app.security import ConfiguredCORSMiddleware
 from app.session_api import SessionAuthenticator, SessionIssuer
 from app.session_api import router as session_router
 from app.sessions import InMemorySessionRepository, SessionService
+from app.transfers import TransferService
+from app.transfers import router as transfer_router
 
 configure_logging()
 
@@ -106,7 +110,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if settings.app_env == "test"
         else WebSocketTicketRepository(database)
     )
-    presence_manager = PresenceManager(device_repository, session_repository)
+    transfer_repository = (
+        InMemoryTransferRequestRepository(device_repository)
+        if settings.app_env == "test"
+        else TransferRequestRepository(database)
+    )
+    presence_manager = PresenceManager(
+        device_repository,
+        session_repository,
+        transfer_repository,
+    )
     device_auth_service = DeviceAuthService(
         account_store,
         device_repository,
@@ -125,6 +138,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.websocket_ticket_repository = websocket_ticket_repository
     application.state.websocket_ticket_service = WebSocketTicketService(websocket_ticket_repository)
     application.state.presence_manager = presence_manager
+    application.state.transfer_repository = transfer_repository
+    application.state.transfer_service = TransferService(
+        transfer_repository,
+        presence_manager,
+        device_repository,
+    )
     application.state.device_repository = device_repository
     application.state.device_challenge_repository = challenge_repository
     application.state.pairing_repository = pairing_repository
@@ -169,6 +188,7 @@ app.include_router(session_router)
 app.include_router(device_router)
 app.include_router(pairing_router)
 app.include_router(presence_router)
+app.include_router(transfer_router)
 
 
 @app.get("/health", tags=["system"])

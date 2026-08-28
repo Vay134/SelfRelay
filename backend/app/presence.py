@@ -20,14 +20,28 @@ from fastapi import (
     status,
 )
 
-from .repositories.models import DeviceRecord, SessionRecord, WebSocketTicketRecord
+from .repositories.models import (
+    DeviceRecord,
+    SessionRecord,
+    TransferRequestRecord,
+    WebSocketTicketRecord,
+)
 from .security import check_optional_origin
 from .session_api import get_authenticated_session, require_session_csrf
 from .sessions import hash_secret, new_opaque_token
 
 WEBSOCKET_TICKET_LIFETIME = timedelta(minutes=1)
 PRESENCE_HEARTBEAT_TIMEOUT = timedelta(seconds=45)
-MAX_WEBSOCKET_MESSAGE_BYTES = 4096
+MAX_WEBSOCKET_MESSAGE_BYTES = 16 * 1024
+MAX_SIGNALING_SDP_BYTES = 12 * 1024
+MAX_SIGNALING_ICE_CANDIDATE_BYTES = 2048
+MAX_SIGNALING_ICE_CANDIDATES = 64
+MAX_SIGNALING_MESSAGES = 128
+
+# Descriptive aliases for callers that name limits by their payload type.
+MAX_SDP_BYTES = MAX_SIGNALING_SDP_BYTES
+MAX_ICE_CANDIDATE_BYTES = MAX_SIGNALING_ICE_CANDIDATE_BYTES
+MAX_ICE_CANDIDATES_PER_TRANSFER = MAX_SIGNALING_ICE_CANDIDATES
 
 PRESENCE_EVENT_TYPE = "presence"
 HEARTBEAT_MESSAGE_TYPE = "heartbeat"
@@ -39,6 +53,20 @@ WEBSOCKET_CLOSE_UNSUPPORTED_DATA = 1003
 WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE = 1009
 WEBSOCKET_CLOSE_HEARTBEAT_TIMEOUT = 4008
 WEBSOCKET_CLOSE_REPLACED = 4001
+
+SIGNALING_OFFER_MESSAGE_TYPE = "sdp_offer"
+SIGNALING_ANSWER_MESSAGE_TYPE = "sdp_answer"
+SIGNALING_ICE_MESSAGE_TYPE = "ice_candidate"
+SIGNALING_MESSAGE_TYPES = frozenset(
+    {
+        SIGNALING_OFFER_MESSAGE_TYPE,
+        SIGNALING_ANSWER_MESSAGE_TYPE,
+        SIGNALING_ICE_MESSAGE_TYPE,
+    }
+)
+SIGNALING_ACTIVE_STATUSES = frozenset(
+    {"offered", "accepted", "negotiating", "connected", "transferring"}
+)
 
 
 class WebSocketTicketRepositoryPort(Protocol):
@@ -65,6 +93,22 @@ class DeviceRepositoryPort(Protocol):
     """The account-scoped device lookup used to render presence safely."""
 
     async def get_by_id(self, account_id: UUID, device_id: UUID) -> DeviceRecord | None: ...
+
+
+class TransferRepositoryPort(Protocol):
+    """Transfer lookup and negotiation transition required by signaling."""
+
+    async def get_by_id(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None: ...
+
+    async def mark_negotiating(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +165,7 @@ class PresenceManager:
         self,
         device_repository: DeviceRepositoryPort | None = None,
         session_repository: CurrentSessionRepositoryPort | None = None,
+        transfer_repository: TransferRepositoryPort | None = None,
         *,
         clock: Callable[[], datetime] | None = None,
         heartbeat_timeout: timedelta = PRESENCE_HEARTBEAT_TIMEOUT,
@@ -129,9 +174,12 @@ class PresenceManager:
             raise ValueError("heartbeat timeout must be positive")
         self._device_repository = device_repository
         self._session_repository = session_repository
+        self._transfer_repository = transfer_repository
         self._clock = clock or (lambda: datetime.now(UTC))
         self._heartbeat_timeout = heartbeat_timeout
         self._connections: dict[UUID, dict[UUID, ActiveConnection]] = {}
+        self._signaling_counts: dict[tuple[UUID, UUID, str], int] = {}
+        self._signaling_totals: dict[UUID, int] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, connection: ActiveConnection) -> ActiveConnection | None:
@@ -190,6 +238,116 @@ class PresenceManager:
         await self.prune_expired(account_id)
         async with self._lock:
             return list(self._connections.get(account_id, {}).values())
+
+    async def connection_for(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+    ) -> ActiveConnection | None:
+        """Return one current, heartbeat-checked connection for an account device."""
+
+        await self.prune_expired(account_id)
+        async with self._lock:
+            account_connections = self._connections.get(account_id)
+            return None if account_connections is None else account_connections.get(device_id)
+
+    async def send_to_device(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        payload: dict[str, object],
+    ) -> bool:
+        """Send a bounded control-plane payload only to an account-owned socket."""
+
+        connection = await self.connection_for(account_id, device_id)
+        if connection is None:
+            return False
+        try:
+            await connection.websocket.send_json(payload)
+        except Exception:
+            await self.remove(connection)
+            return False
+        return True
+
+    async def forward_signaling(
+        self,
+        connection: ActiveConnection,
+        message: dict[str, object],
+    ) -> bool:
+        """Validate and forward one typed SDP/ICE message to its selected peer.
+
+        The current socket's authenticated account and device are always the source
+        of routing.  Device identifiers supplied by the browser are accepted only
+        when they exactly describe the account-owned transfer in the repository.
+        """
+
+        repository = self._transfer_repository
+        if repository is None:
+            return False
+        parsed = _parse_signaling_message(message, self._clock())
+        if parsed is None:
+            return False
+        transfer_id, sender_device_id, recipient_device_id, message_type = parsed
+        transfer = await repository.get_by_id(connection.account_id, transfer_id)
+        if transfer is None or not _active_transfer(transfer, self._clock()):
+            if transfer is not None:
+                await self._clear_signaling_state(transfer.id)
+            return False
+        message_expiry = _message_expiry(message.get("expires_at"), self._clock())
+        if message_expiry is None or message_expiry > transfer.expires_at:
+            return False
+        if (
+            transfer.protocol_version != message["v"]
+            or transfer.sender_device_id != sender_device_id
+            or transfer.recipient_device_id != recipient_device_id
+            or connection.device_id not in (sender_device_id, recipient_device_id)
+        ):
+            return False
+
+        if message_type == SIGNALING_OFFER_MESSAGE_TYPE:
+            if connection.device_id != sender_device_id or transfer.status not in {
+                "accepted",
+                "negotiating",
+            }:
+                return False
+            if transfer.status == "accepted":
+                transition = getattr(repository, "mark_negotiating", None)
+                if not callable(transition):
+                    return False
+                negotiating = await transition(connection.account_id, transfer.id)
+                if negotiating is None:
+                    return False
+        elif message_type == SIGNALING_ANSWER_MESSAGE_TYPE:
+            if connection.device_id != recipient_device_id or transfer.status != "negotiating":
+                return False
+        elif transfer.status not in {"accepted", "negotiating"}:
+            return False
+
+        count_key = (transfer.id, connection.device_id, message_type)
+        async with self._lock:
+            count = self._signaling_counts.get(count_key, 0)
+            maximum = (
+                1
+                if message_type
+                in {
+                    SIGNALING_OFFER_MESSAGE_TYPE,
+                    SIGNALING_ANSWER_MESSAGE_TYPE,
+                }
+                else MAX_SIGNALING_ICE_CANDIDATES
+            )
+            if count >= maximum:
+                return False
+            total = self._signaling_totals.get(transfer.id, 0)
+            if total >= MAX_SIGNALING_MESSAGES:
+                return False
+            self._signaling_counts[count_key] = count + 1
+            self._signaling_totals[transfer.id] = total + 1
+
+        target_device_id = (
+            recipient_device_id if connection.device_id == sender_device_id else sender_device_id
+        )
+        await self.send_to_device(connection.account_id, target_device_id, message)
+        return True
 
     async def online_devices(self, account_id: UUID) -> list[dict[str, object]]:
         """Return only active, account-owned device metadata for online sockets."""
@@ -255,6 +413,8 @@ class PresenceManager:
                 for connection in account_connections.values()
             ]
             self._connections.clear()
+            self._signaling_counts.clear()
+            self._signaling_totals.clear()
         for connection in connections:
             await _close(connection.websocket, 1001)
 
@@ -277,6 +437,12 @@ class PresenceManager:
                     self._connections.pop(current_account_id, None)
         for connection in expired:
             await _close(connection.websocket, WEBSOCKET_CLOSE_HEARTBEAT_TIMEOUT)
+
+    async def _clear_signaling_state(self, transfer_id: UUID) -> None:
+        async with self._lock:
+            self._signaling_totals.pop(transfer_id, None)
+            for key in [key for key in self._signaling_counts if key[0] == transfer_id]:
+                self._signaling_counts.pop(key, None)
 
     async def _device(self, account_id: UUID, device_id: UUID) -> DeviceRecord | None:
         if self._device_repository is None:
@@ -326,6 +492,105 @@ async def _close(websocket: WebSocket, code: int) -> None:
         await websocket.close(code=code)
     except Exception:
         return
+
+
+def _json_object_no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate JSON object members before routing a socket message."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object member")
+        result[key] = value
+    return result
+
+
+def _canonical_uuid(value: object) -> UUID | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return parsed if str(parsed) == value else None
+
+
+def _message_expiry(value: object, now: datetime) -> datetime | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    try:
+        expires_at = datetime.fromtimestamp(value / 1000, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return expires_at if expires_at > _utc_now(now) else None
+
+
+def _active_transfer(record: TransferRequestRecord, now: datetime) -> bool:
+    return record.status in SIGNALING_ACTIVE_STATUSES and record.expires_at > _utc_now(now)
+
+
+def _parse_signaling_message(
+    message: dict[str, object],
+    now: datetime,
+) -> tuple[UUID, UUID, UUID, str] | None:
+    """Validate the small, typed envelope used for SDP and ICE forwarding."""
+
+    message_type = message.get("type")
+    if message_type not in SIGNALING_MESSAGE_TYPES:
+        return None
+    if isinstance(message.get("v"), bool) or message.get("v") != 1:
+        return None
+    transfer_id = _canonical_uuid(message.get("transfer_id"))
+    sender_device_id = _canonical_uuid(message.get("sender_device_id"))
+    recipient_device_id = _canonical_uuid(message.get("recipient_device_id"))
+    if transfer_id is None or sender_device_id is None or recipient_device_id is None:
+        return None
+    if sender_device_id == recipient_device_id:
+        return None
+    if _message_expiry(message.get("expires_at"), now) is None:
+        return None
+
+    envelope = {
+        "type",
+        "v",
+        "transfer_id",
+        "sender_device_id",
+        "recipient_device_id",
+        "expires_at",
+    }
+    if message_type in {SIGNALING_OFFER_MESSAGE_TYPE, SIGNALING_ANSWER_MESSAGE_TYPE}:
+        if set(message) != envelope | {"sdp"}:
+            return None
+        sdp = message.get("sdp")
+        if not isinstance(sdp, str) or not sdp:
+            return None
+        if len(sdp.encode("utf-8")) > MAX_SIGNALING_SDP_BYTES:
+            return None
+    else:
+        allowed = envelope | {"candidate", "sdp_mid", "sdp_mline_index", "username_fragment"}
+        if not set(message).issubset(allowed) or "candidate" not in message:
+            return None
+        candidate = message.get("candidate")
+        if (
+            not isinstance(candidate, str)
+            or not candidate
+            or len(candidate.encode("utf-8")) > MAX_SIGNALING_ICE_CANDIDATE_BYTES
+        ):
+            return None
+        for key in ("sdp_mid", "username_fragment"):
+            value = message.get(key)
+            if value is not None and (
+                not isinstance(value, str) or len(value.encode("utf-8")) > 128
+            ):
+                return None
+        line_index = message.get("sdp_mline_index")
+        if line_index is not None and (
+            isinstance(line_index, bool) or not isinstance(line_index, int) or line_index < 0
+        ):
+            return None
+        if isinstance(line_index, int) and line_index > 65535:
+            return None
+    return transfer_id, sender_device_id, recipient_device_id, cast(str, message_type)
 
 
 def _ticket_repository(request: Request) -> WebSocketTicketRepositoryPort:
@@ -388,24 +653,28 @@ async def _serve_connection(
             await _close(websocket, WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE)
             return
         try:
-            message = json.loads(raw_message)
+            message = json.loads(raw_message, object_pairs_hook=_json_object_no_duplicates)
         except (TypeError, ValueError):
             await _close(websocket, WEBSOCKET_CLOSE_UNSUPPORTED_DATA)
             return
-        if not isinstance(message, dict) or set(message) != {"type"}:
+        if not isinstance(message, dict):
             await _close(websocket, WEBSOCKET_CLOSE_UNSUPPORTED_DATA)
             return
 
         message_type = message.get("type")
-        if message_type == HEARTBEAT_MESSAGE_TYPE:
+        if message_type == HEARTBEAT_MESSAGE_TYPE and set(message) == {"type"}:
             updated = await manager.heartbeat(connection)
             if updated is None:
                 await _close(websocket, WEBSOCKET_CLOSE_POLICY)
                 return
             connection = updated
             await websocket.send_json({"type": HEARTBEAT_MESSAGE_TYPE})
-        elif message_type == PING_MESSAGE_TYPE:
+        elif message_type == PING_MESSAGE_TYPE and set(message) == {"type"}:
             await websocket.send_json({"type": PONG_MESSAGE_TYPE})
+        elif message_type in SIGNALING_MESSAGE_TYPES:
+            if not await manager.forward_signaling(connection, message):
+                await _close(websocket, WEBSOCKET_CLOSE_POLICY)
+                return
         else:
             await _close(websocket, WEBSOCKET_CLOSE_UNSUPPORTED_DATA)
             return
@@ -467,6 +736,8 @@ async def websocket_presence(websocket: WebSocket) -> None:
     ):
         await _close(websocket, status.WS_1011_INTERNAL_ERROR)
         return
+    if manager._transfer_repository is None:
+        manager._transfer_repository = getattr(websocket.app.state, "transfer_repository", None)
     consumer = getattr(ticket_repository, "consume_for_socket", None)
     lookup = getattr(session_repository, "find_current_by_id", None)
     if not callable(consumer) or not callable(lookup):
@@ -513,12 +784,24 @@ __all__ = [
     "ActiveConnection",
     "ConnectionManager",
     "HEARTBEAT_MESSAGE_TYPE",
+    "MAX_ICE_CANDIDATE_BYTES",
+    "MAX_ICE_CANDIDATES_PER_TRANSFER",
+    "MAX_SIGNALING_ICE_CANDIDATE_BYTES",
+    "MAX_SIGNALING_ICE_CANDIDATES",
+    "MAX_SIGNALING_MESSAGES",
+    "MAX_SIGNALING_SDP_BYTES",
     "MAX_WEBSOCKET_MESSAGE_BYTES",
+    "MAX_SDP_BYTES",
     "PING_MESSAGE_TYPE",
     "PONG_MESSAGE_TYPE",
     "PRESENCE_EVENT_TYPE",
     "PRESENCE_HEARTBEAT_TIMEOUT",
     "PresenceManager",
+    "SIGNALING_ANSWER_MESSAGE_TYPE",
+    "SIGNALING_ICE_MESSAGE_TYPE",
+    "SIGNALING_MESSAGE_TYPES",
+    "SIGNALING_OFFER_MESSAGE_TYPE",
+    "TransferRepositoryPort",
     "WebSocketConnectionManager",
     "WebSocketTicketIssuer",
     "WebSocketTicketService",

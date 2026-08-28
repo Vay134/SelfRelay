@@ -33,7 +33,11 @@ from .security_events import (
     SecurityEventRepository,
 )
 from .sessions import SessionRepository
-from .transfers import TransferRepository, TransferRequestRepository
+from .transfers import (
+    InMemoryTransferRequestRepository,
+    TransferRepository,
+    TransferRequestRepository,
+)
 from .websocket_tickets import (
     InMemoryWebSocketTicketRepository,
     InMemoryWebsocketTicketRepository,
@@ -71,6 +75,7 @@ __all__ = [
     "SessionRecord",
     "SessionRepository",
     "InMemoryDeviceRepository",
+    "InMemoryTransferRequestRepository",
     "TransferRepository",
     "TransferRequestRecord",
     "TransferRequestRepository",
