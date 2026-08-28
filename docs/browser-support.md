@@ -6,7 +6,7 @@ This application needs a secure context (HTTPS in a hosted environment; `localho
 
 | Browser | Support position | Current repository evidence |
 | --- | --- | --- |
-| Chrome / Chromium | Supported target when using a current desktop release | No manual end-to-end browser run recorded yet |
+| Chrome / Chromium | Supported target when using a current desktop release | Local Chrome-to-in-app direct transfer on 2026-08-29; checklist incomplete |
 | Microsoft Edge | Supported target when using a current desktop release | No manual end-to-end browser run recorded yet |
 | Firefox | Best effort; verify DataChannel and storage behavior on the current release | No manual end-to-end browser run recorded yet |
 | Safari on macOS | Best effort; verify storage persistence, permissions, and WebRTC negotiation on the current release | No manual end-to-end browser run recorded yet |
