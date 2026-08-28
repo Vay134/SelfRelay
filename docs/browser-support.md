@@ -31,3 +31,10 @@ Record the browser name, version, operating system, date, network conditions, an
 ## Result log
 
 Until real browser runs are recorded, do not describe any target above as passed. Add a dated entry here with the exact browser version and checklist outcome. The repository's frontend unit suite provides regression coverage for protocol, transfer, security-boundary, and tab-semantics code, but it does not replace this manual two-browser workflow.
+
+### 2026-08-28 — Local Chromium/in-app browser smoke run
+
+- Environment: local fake backend and localhost frontend; one isolated browser profile (exact browser build not recorded).
+- Passed: account enrollment; confirmation dialogs, including Escape handling and focus return; trusted session and device-key persistence after reload; keyboard workspace navigation; signed-in transfer workspace readiness; and no browser-console errors.
+- Not run: a send/receive transfer, download confirmation after receipt, direct mode, relay mode, or Chrome/Edge/Firefox/Safari multi-profile verification. Only one isolated browser profile was available, so the two-profile transfer workflow and cross-browser verification could not be completed.
+- This result confirms local workspace readiness only; it is not an end-to-end transfer certification.
