@@ -21,6 +21,7 @@ from app.device_auth import DeviceAuthService
 from app.device_auth import router as device_router
 from app.logging import configure_logging
 from app.metrics import RuntimeMetrics
+from app.operator_metrics import router as operator_metrics_router
 from app.pairings import (
     PairingApprovalService,
     PairingApprovalStore,
@@ -245,6 +246,7 @@ app.include_router(session_router)
 app.include_router(device_router)
 app.include_router(pairing_router)
 app.include_router(presence_router)
+app.include_router(operator_metrics_router)
 app.include_router(transfer_router)
 app.include_router(turn_router)
 

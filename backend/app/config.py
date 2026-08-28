@@ -39,6 +39,16 @@ def _value(environ: Mapping[str, str], name: str, default: str) -> str:
     return value
 
 
+def _optional_value(environ: Mapping[str, str], name: str) -> str | None:
+    raw_value = environ.get(name)
+    if raw_value is None:
+        return None
+    value = raw_value.strip()
+    if not value:
+        raise ConfigurationError(f"{name} must not be empty")
+    return value
+
+
 def _choice(
     environ: Mapping[str, str],
     name: str,
@@ -119,6 +129,7 @@ class Settings:
     auth_adapter: AuthAdapter
     turn_adapter: TurnAdapter
     rate_limit_secret: str = _DEFAULT_RATE_LIMIT_SECRET
+    availability_probe_token: str | None = None
     cloudflare_turn_key_id: str | None = None
     cloudflare_turn_api_token: str | None = None
 
@@ -155,6 +166,7 @@ class Settings:
             lower=True,
         )
         rate_limit_secret = _value(source, "RATE_LIMIT_SECRET", _DEFAULT_RATE_LIMIT_SECRET)
+        availability_probe_token = _optional_value(source, "AVAILABILITY_PROBE_TOKEN")
         cloudflare_turn_key_id = _turn_secret(
             source,
             "CLOUDFLARE_TURN_KEY_ID",
@@ -176,6 +188,7 @@ class Settings:
             auth_adapter=cast(AuthAdapter, auth_adapter),
             turn_adapter=cast(TurnAdapter, turn_adapter),
             rate_limit_secret=rate_limit_secret,
+            availability_probe_token=availability_probe_token,
             cloudflare_turn_key_id=cloudflare_turn_key_id,
             cloudflare_turn_api_token=cloudflare_turn_api_token,
         )
