@@ -4,12 +4,14 @@ import { ApiError, getCurrentSession, type CurrentSession } from './pairingApi';
 import { DeviceKeyMissingError, loadDeviceIdentity, type DeviceIdentity } from './deviceIdentity';
 import {
     acceptTransfer,
+    buildConnectionModeReport,
     cancelTransfer,
     createTransferOffer,
     getTransferPeerDeviceKey,
     getTransferTurnCredentials,
     listOnlineDevices,
     listTransfers,
+    MAX_QUEUED_SIGNALS_PER_TRANSFER,
     rejectTransfer,
     type PresenceSocketMessage,
     type SignalingEnvelope,
@@ -90,6 +92,7 @@ function statusLabel(status: PresenceClientStatus): string {
         online: 'Online',
         reconnecting: 'Reconnecting',
         offline: 'Offline · retrying',
+        failed: 'Unavailable · try again',
     }[status];
 }
 
@@ -475,6 +478,11 @@ function TransferConsole() {
                     },
                     onRelayStatusChange: (relayStatus) => {
                         updateTransferRun(transfer.transfer_id, { relayStatus });
+                        if (relayStatus !== 'unknown') {
+                            socket.send(
+                                buildConnectionModeReport(transfer.transfer_id, relayStatus),
+                            );
+                        }
                     },
                     onDataChannel: (channel) => {
                         context.channel = channel;
@@ -507,7 +515,20 @@ function TransferConsole() {
         }
     };
 
+    const pruneQueuedSignals = (): void => {
+        const now = Date.now();
+        for (const [transferId, queued] of queuedSignalsRef.current) {
+            const active = queued.filter((queuedMessage) => queuedMessage.expires_at > now);
+            if (active.length === 0) {
+                queuedSignalsRef.current.delete(transferId);
+            } else if (active.length !== queued.length) {
+                queuedSignalsRef.current.set(transferId, active);
+            }
+        }
+    };
+
     const handleSignalingMessage = async (message: SignalingEnvelope): Promise<void> => {
+        pruneQueuedSignals();
         const currentSession = sessionRef.current;
         if (
             !currentSession ||
@@ -524,6 +545,14 @@ function TransferConsole() {
                 currentSession.device_id === message.recipient_device_id;
             if (!canCreateRecipientSession) {
                 const queued = queuedSignalsRef.current.get(message.transfer_id) ?? [];
+                if (queued.length >= MAX_QUEUED_SIGNALS_PER_TRANSFER) {
+                    markSessionFailed(
+                        message.transfer_id,
+                        new Error('The signaling queue is full.'),
+                        'The browser connection could not be negotiated.',
+                    );
+                    return;
+                }
                 queued.push(message);
                 queuedSignalsRef.current.set(message.transfer_id, queued);
                 return;
@@ -570,6 +599,13 @@ function TransferConsole() {
             message.type === 'transfer_expired'
         ) {
             upsertTransfer(transferFromNotification(message));
+            if (
+                message.type === 'transfer_rejected' ||
+                message.type === 'transfer_cancelled' ||
+                message.type === 'transfer_expired'
+            ) {
+                queuedSignalsRef.current.delete(message.transfer_id);
+            }
             return;
         }
         if (

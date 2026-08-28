@@ -3,6 +3,7 @@ import type { SignedHandshakeAnswer, SignedHandshakeOffer } from './transferProt
 
 export const TRANSFER_PROTOCOL_VERSION = 1;
 export const SIGNALING_MESSAGE_TTL_MS = 30_000;
+export const MAX_QUEUED_SIGNALS_PER_TRANSFER = 32;
 
 export type OnlineDevice = {
     device_id: string;
@@ -133,11 +134,19 @@ export type SignalingEnvelope =
     | HandshakeOfferEnvelope
     | HandshakeAnswerEnvelope;
 
+export type ConnectionModeReport = {
+    type: 'connection_mode';
+    v: 1;
+    transfer_id: string;
+    mode: 'direct' | 'relay';
+};
+
 export type PresenceSocketMessage =
     | PresenceEvent
     | HeartbeatEvent
     | TransferNotification
-    | SignalingEnvelope;
+    | SignalingEnvelope
+    | ConnectionModeReport;
 
 export type IceCandidateInput = {
     candidate: string;
@@ -300,6 +309,13 @@ function envelopeFields(transfer: TransferRequest, now: number) {
         recipient_device_id: transfer.recipient_device_id,
         expires_at: signalingExpiry(transfer.expires_at, now),
     };
+}
+
+export function buildConnectionModeReport(
+    transferId: string,
+    mode: 'direct' | 'relay',
+): ConnectionModeReport {
+    return { type: 'connection_mode', v: 1, transfer_id: transferId, mode };
 }
 
 export function buildSdpOfferEnvelope(

@@ -5,7 +5,13 @@ import {
     type PresenceSocketMessage,
 } from './transferApi';
 
-export type PresenceClientStatus = 'idle' | 'connecting' | 'online' | 'reconnecting' | 'offline';
+export type PresenceClientStatus =
+    | 'idle'
+    | 'connecting'
+    | 'online'
+    | 'reconnecting'
+    | 'offline'
+    | 'failed';
 
 export type WebSocketFactory = (url: string) => WebSocket;
 
@@ -14,6 +20,7 @@ export type PresenceSocketClientOptions = {
     socketFactory?: WebSocketFactory;
     heartbeatIntervalMs?: number;
     reconnectDelayMs?: number;
+    maxReconnectAttempts?: number;
     onMessage?: (message: PresenceSocketMessage) => void;
     onStatusChange?: (status: PresenceClientStatus) => void;
     onError?: (error: unknown) => void;
@@ -21,6 +28,7 @@ export type PresenceSocketClientOptions = {
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 const WEBSOCKET_CONNECTING = 0;
 const WEBSOCKET_OPEN = 1;
 
@@ -29,6 +37,7 @@ export class PresenceSocketClient {
     private readonly socketFactory: WebSocketFactory;
     private readonly heartbeatIntervalMs: number;
     private readonly reconnectDelayMs: number;
+    private readonly maxReconnectAttempts: number;
     private readonly onMessage?: (message: PresenceSocketMessage) => void;
     private readonly onStatusChange?: (status: PresenceClientStatus) => void;
     private readonly onError?: (error: unknown) => void;
@@ -38,6 +47,7 @@ export class PresenceSocketClient {
     private openingPromise: Promise<void> | null = null;
     private running = false;
     private hasConnected = false;
+    private reconnectAttempts = 0;
     private currentStatus: PresenceClientStatus = 'idle';
 
     constructor(options: PresenceSocketClientOptions = {}) {
@@ -45,6 +55,10 @@ export class PresenceSocketClient {
         this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
         this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
         this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+        this.maxReconnectAttempts = options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS;
+        if (!Number.isSafeInteger(this.maxReconnectAttempts) || this.maxReconnectAttempts <= 0) {
+            throw new TypeError('The maximum reconnect attempts must be positive.');
+        }
         this.onMessage = options.onMessage;
         this.onStatusChange = options.onStatusChange;
         this.onError = options.onError;
@@ -95,6 +109,7 @@ export class PresenceSocketClient {
             this.reconnectTimer = null;
         }
         this.stopHeartbeat();
+        this.reconnectAttempts = 0;
         const socket = this.socket;
         this.socket = null;
         if (socket) {
@@ -147,6 +162,7 @@ export class PresenceSocketClient {
                 createdSocket.onopen = () => {
                     settled = true;
                     this.hasConnected = true;
+                    this.reconnectAttempts = 0;
                     this.setStatus('online');
                     this.startHeartbeat(createdSocket);
                     resolve();
@@ -178,8 +194,13 @@ export class PresenceSocketClient {
             this.stopHeartbeat();
             this.onError?.(error);
             if (this.running) {
-                this.setStatus('offline');
-                this.scheduleReconnect();
+                this.reconnectAttempts += 1;
+                if (this.reconnectAttempts <= this.maxReconnectAttempts) {
+                    this.setStatus('offline');
+                    this.scheduleReconnect();
+                } else {
+                    this.setStatus('failed');
+                }
             }
             throw error;
         }

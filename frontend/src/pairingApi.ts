@@ -9,6 +9,7 @@ const configuredApiOrigin = (import.meta as ImportMeta & { env?: { VITE_API_ORIG
     ?.VITE_API_ORIGIN;
 export const API_ORIGIN = (configuredApiOrigin ?? 'http://localhost:8000').replace(/\/+$/u, '');
 export const PAIRING_PROTOCOL_VERSION = 1;
+export const API_REQUEST_TIMEOUT_MS = 15_000;
 
 export type PairingStatus = 'pending' | 'approved' | 'rejected' | 'consumed' | 'expired';
 
@@ -139,17 +140,29 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     }
 
     let response: Response;
+    const timeoutController = init.signal ? null : new AbortController();
+    const timeout = timeoutController
+        ? setTimeout(() => timeoutController.abort(), API_REQUEST_TIMEOUT_MS)
+        : null;
     try {
         response = await fetch(`${API_ORIGIN}${path}`, {
             ...init,
             credentials: 'include',
             headers,
+            ...(timeoutController ? { signal: timeoutController.signal } : {}),
         });
     } catch (error) {
+        if (timeoutController?.signal.aborted) {
+            throw new ApiError(0, 'The secure transfer service did not respond in time.');
+        }
         throw new ApiError(
             0,
             error instanceof Error ? error.message : 'The secure transfer service is unreachable.',
         );
+    } finally {
+        if (timeout !== null) {
+            clearTimeout(timeout);
+        }
     }
 
     const body = await responseBody(response);

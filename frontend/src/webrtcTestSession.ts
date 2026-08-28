@@ -27,6 +27,9 @@ export type WebRtcRelayStatus = 'unknown' | 'direct' | 'relay';
 
 export type PeerConnectionFactory = (configuration?: RTCConfiguration) => RTCPeerConnection;
 
+export const MAX_PENDING_ICE_CANDIDATES = 64;
+export const DEFAULT_NEGOTIATION_TIMEOUT_MS = 30_000;
+
 export type WebRtcTestSessionOptions = {
     transfer: TransferRequest;
     role: WebRtcTestRole;
@@ -40,6 +43,7 @@ export type WebRtcTestSessionOptions = {
     peerSigningPublicKey?: CryptoKey | Uint8Array;
     accountEpoch?: number;
     onHandshake?: (material: DerivedHandshakeMaterial) => void;
+    negotiationTimeoutMs?: number;
 };
 
 export class WebRtcTestSession {
@@ -54,6 +58,7 @@ export class WebRtcTestSession {
     private readonly peerSigningPublicKey?: CryptoKey | Uint8Array;
     private readonly accountEpoch?: number;
     private readonly onHandshake?: (material: DerivedHandshakeMaterial) => void;
+    private readonly negotiationTimeoutMs: number;
     private stateValue: WebRtcTestState = 'idle';
     private dataChannel: RTCDataChannel | null = null;
     private remoteDescriptionReady = false;
@@ -63,6 +68,7 @@ export class WebRtcTestSession {
     private handshakeEphemeralPrivateKey: CryptoKey | null = null;
     private materialValue: DerivedHandshakeMaterial | null = null;
     private relayStatusValue: WebRtcRelayStatus = 'unknown';
+    private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(options: WebRtcTestSessionOptions) {
         this.transfer = options.transfer;
@@ -75,6 +81,10 @@ export class WebRtcTestSession {
         this.peerSigningPublicKey = options.peerSigningPublicKey;
         this.accountEpoch = options.accountEpoch;
         this.onHandshake = options.onHandshake;
+        this.negotiationTimeoutMs = options.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS;
+        if (!Number.isFinite(this.negotiationTimeoutMs) || this.negotiationTimeoutMs <= 0) {
+            throw new TypeError('The negotiation timeout must be positive.');
+        }
         const createPeerConnection =
             options.peerConnectionFactory ??
             ((configuration) => new RTCPeerConnection(configuration));
@@ -127,6 +137,7 @@ export class WebRtcTestSession {
         }
         this.started = true;
         this.setState('negotiating');
+        this.armNegotiationTimeout();
         try {
             if (this.role !== 'sender') {
                 return;
@@ -256,6 +267,7 @@ export class WebRtcTestSession {
         }
         this.started = true;
         this.setState('negotiating');
+        this.armNegotiationTimeout();
         if (message.type === 'sdp_offer') {
             if (this.role !== 'recipient') {
                 return false;
@@ -287,6 +299,7 @@ export class WebRtcTestSession {
         }
         this.dataChannel?.close();
         this.peerConnection.close();
+        this.clearNegotiationTimeout();
         this.setState('closed');
     }
 
@@ -300,6 +313,9 @@ export class WebRtcTestSession {
             usernameFragment: message.username_fragment,
         };
         if (!this.remoteDescriptionReady) {
+            if (this.pendingCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
+                throw new Error('The ICE candidate queue is full.');
+            }
             this.pendingCandidates.push(candidate);
             return;
         }
@@ -318,6 +334,7 @@ export class WebRtcTestSession {
         this.dataChannel = channel;
         channel.onopen = () => {
             this.onDataChannel?.(channel);
+            this.clearNegotiationTimeout();
             this.setState('connected');
             void this.refreshRelayStatus();
         };
@@ -343,7 +360,27 @@ export class WebRtcTestSession {
             return;
         }
         this.stateValue = state;
+        if (state === 'connected' || state === 'failed' || state === 'closed') {
+            this.clearNegotiationTimeout();
+        }
         this.onStateChange?.(state);
+    }
+
+    private armNegotiationTimeout(): void {
+        this.clearNegotiationTimeout();
+        this.negotiationTimer = setTimeout(() => {
+            this.negotiationTimer = null;
+            if (this.stateValue === 'negotiating') {
+                this.setState('failed');
+            }
+        }, this.negotiationTimeoutMs);
+    }
+
+    private clearNegotiationTimeout(): void {
+        if (this.negotiationTimer !== null) {
+            clearTimeout(this.negotiationTimer);
+            this.negotiationTimer = null;
+        }
     }
 
     private async refreshRelayStatus(): Promise<void> {
