@@ -736,6 +736,11 @@ class PresenceManager:
             self._signaling_account_totals.pop(usage.account_id, None)
         return True
 
+    async def release_transfer(self, transfer_id: UUID) -> None:
+        """Release signaling budgets once a transfer reaches a terminal state."""
+
+        await self._clear_signaling_state(transfer_id)
+
     async def _clear_signaling_state(self, transfer_id: UUID) -> None:
         async with self._lock:
             cleared = self._release_signaling(transfer_id)
@@ -1176,6 +1181,7 @@ __all__ = [
     "WEBSOCKET_CLOSE_TRY_AGAIN",
     "SIGNALING_SINGLE_USE_MESSAGE_TYPES",
     "WEBSOCKET_SEND_TIMEOUT_SECONDS",
+    "SIGNALING_STATE_RETENTION",
     "issue_websocket_ticket",
     "list_online_devices",
     "public_ticket",

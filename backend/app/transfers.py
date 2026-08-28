@@ -247,6 +247,7 @@ class TransferService:
         rejected = await self._repository.reject(account_id, transfer_id, recipient_device_id)
         if rejected is None:
             raise TransferError("offer is unavailable")
+        await self._release(transfer_id)
         await self._notify(
             account_id,
             rejected.sender_device_id,
@@ -268,6 +269,7 @@ class TransferService:
         cancelled = await self._repository.cancel(account_id, transfer_id, actor_device_id)
         if cancelled is None:
             raise TransferError("transfer is unavailable")
+        await self._release(transfer_id)
         await self._notify_participants(
             account_id,
             cancelled,
@@ -285,6 +287,7 @@ class TransferService:
         expired = await self._repository.expire(account_id, transfer_id)
         if expired is None:
             raise TransferError("transfer is not stale or is unavailable")
+        await self._release(transfer_id)
         await self._notify_participants(
             account_id,
             expired,
@@ -412,6 +415,14 @@ class TransferService:
         if self._presence_manager is None:
             return
         await self._presence_manager.send_to_device(account_id, device_id, payload)
+
+    async def _release(self, transfer_id: UUID) -> None:
+        """Drop signaling state a terminal transfer can no longer use."""
+
+        if self._presence_manager is None:
+            return
+        await self._presence_manager.release_transfer(transfer_id)
+        self._metrics.increment("transfer_state_released")
 
 
 class TransferCreateRequest(BaseModel):
