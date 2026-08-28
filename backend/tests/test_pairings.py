@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import secrets
 from collections.abc import Generator
@@ -25,7 +26,12 @@ from app.device_crypto import (
     pairing_enrollment_message,
     signed_message,
 )
-from app.pairings import PAIRING_REQUEST_MESSAGE
+from app.pairings import (
+    PAIRING_MAX_ATTEMPTS,
+    PAIRING_RATE_LIMIT_MESSAGE,
+    PAIRING_REQUEST_ACCOUNT_LIMIT,
+    PAIRING_REQUEST_MESSAGE,
+)
 from app.repositories.devices import InMemoryDeviceRepository
 from app.repositories.models import AccountRecord, DeviceRecord, PairingRequestRecord
 from app.repositories.pairings import InMemoryPairingRequestRepository
@@ -261,6 +267,141 @@ def test_known_and_unknown_pairing_requests_have_the_same_public_contract(
     assert known_body["status"] == unknown_body["status"] == "pending"
     assert isinstance(unknown_body["request_id"], str)
     assert isinstance(unknown_body["comparison_code"], str)
+
+
+def test_duplicate_pending_request_is_suppressed_and_audit_event_is_bounded(
+    client: TestClient,
+) -> None:
+    email = "pairing-suppression@example.test"
+    _register(client, email)
+    _, public_key = _new_key()
+    headers = {"Origin": APP_ORIGIN}
+    payload = {"email": email, "public_key": _b64(public_key)}
+
+    first = client.post("/auth/pairing/request", headers=headers, json=payload)
+    duplicate = client.post("/auth/pairing/request", headers=headers, json=payload)
+
+    assert first.status_code == duplicate.status_code == 202
+    assert first.json()["request_id"] != duplicate.json()["request_id"]
+    account = awaitable_get_account(main.app.state.auth_service, email)
+    pending = main.app.state.pairing_repository
+    records = asyncio.run(pending.list_pending_for_account(account.id))
+    assert len(records) == 1
+
+    events = main.app.state.security_event_repository.events
+    assert [event.event_type for event in events] == ["pairing_created", "pairing_failed"]
+    assert events[-1].outcome == "blocked"
+    assert events[-1].details["reason"] == "duplicate_pending_request"
+    assert "comparison_code" not in events[-1].details
+
+
+def test_pairing_creation_is_limited_per_account_and_records_rate_limit_event(
+    client: TestClient,
+) -> None:
+    email = "pairing-rate-limit@example.test"
+    _register(client, email)
+    headers = {"Origin": APP_ORIGIN}
+
+    for _index in range(PAIRING_REQUEST_ACCOUNT_LIMIT):
+        _, public_key = _new_key()
+        response = client.post(
+            "/auth/pairing/request",
+            headers=headers,
+            json={"email": email, "public_key": _b64(public_key)},
+        )
+        assert response.status_code == 202
+
+    _, blocked_key = _new_key()
+    blocked = client.post(
+        "/auth/pairing/request",
+        headers=headers,
+        json={"email": email, "public_key": _b64(blocked_key)},
+    )
+    assert blocked.status_code == 429
+    assert blocked.json() == {"detail": PAIRING_RATE_LIMIT_MESSAGE}
+
+    events = main.app.state.security_event_repository.events
+    assert events[-1].event_type == "rate_limited"
+    assert events[-1].outcome == "blocked"
+    assert events[-1].details == {"scope": "pairing_creation"}
+    assert events[-1].network_fingerprint is not None
+
+
+def test_pairing_code_attempt_limit_records_failure_and_blocked_events(
+    client: TestClient,
+) -> None:
+    approving_private_key, approving_public_key = _new_key()
+    registered = _register(
+        client,
+        "pairing-attempt-limit@example.test",
+        private_key=approving_private_key,
+        public_key=approving_public_key,
+    )
+    _, requested_public_key = _new_key()
+    created = client.post(
+        "/auth/pairing/request",
+        headers={"Origin": APP_ORIGIN},
+        json={
+            "email": "pairing-attempt-limit@example.test",
+            "public_key": _b64(requested_public_key),
+        },
+    )
+    assert created.status_code == 202
+    body = cast(dict[str, object], created.json())
+    account_id = UUID(cast(str, registered["account_id"]))
+    account = awaitable_get_account(
+        main.app.state.auth_service,
+        "pairing-attempt-limit@example.test",
+    )
+    device_body = cast(dict[str, object], registered["device"])
+    device = awaitable_get_device(
+        main.app.state.device_repository,
+        account_id,
+        cast(str, device_body["device_id"]),
+    )
+    assert device is not None
+    record = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, body["request_id"]),
+    )
+    assert record is not None
+    approval_nonce = secrets.token_bytes(32)
+    approval_payload = pairing_approval_payload(
+        record,
+        account,
+        device,
+        approval_nonce=approval_nonce,
+    )
+    approval_body = {
+        "comparison_code": "000000",
+        "approval_nonce": _b64(approval_nonce),
+        "signature": _sign_pairing(approving_private_key, approval_payload),
+    }
+    approval_url = f"/auth/pairing/requests/{body['request_id']}/approve"
+    approval_headers = {
+        "Origin": APP_ORIGIN,
+        "X-CSRF-Token": cast(str, registered["csrf_token"]),
+    }
+    for _ in range(PAIRING_MAX_ATTEMPTS):
+        response = client.post(approval_url, headers=approval_headers, json=approval_body)
+        assert response.status_code == 401
+    blocked = client.post(approval_url, headers=approval_headers, json=approval_body)
+    assert blocked.status_code == 401
+
+    after = awaitable_get_pairing(
+        main.app.state.pairing_repository,
+        account.id,
+        cast(str, body["request_id"]),
+    )
+    assert after is not None
+    assert after.attempt_count == PAIRING_MAX_ATTEMPTS
+    assert after.status == "pending"
+
+    events = main.app.state.security_event_repository.events
+    assert events[-1].event_type == "pairing_failed"
+    assert events[-1].outcome == "blocked"
+    assert events[-1].details == {"request_id": cast(str, body["request_id"])}
 
 
 def awaitable_get_account(auth_service: OtpBootstrapService, email: str) -> AccountRecord:

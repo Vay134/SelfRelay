@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import re
 import secrets
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Protocol, cast
@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .auth import normalize_email
+from .auth import network_fingerprint, normalize_email
 from .device_auth import (
     MAX_DEVICE_LABEL_LENGTH,
     DeviceAuthResult,
@@ -39,6 +39,11 @@ from .session_api import get_authenticated_session, require_session_csrf, set_se
 from .sessions import CreatedSession, SessionService, hash_secret
 
 PAIRING_REQUEST_LIFETIME = timedelta(minutes=10)
+PAIRING_REQUEST_RATE_LIMIT_WINDOW = timedelta(minutes=10)
+PAIRING_REQUEST_EMAIL_LIMIT = 3
+PAIRING_REQUEST_ACCOUNT_LIMIT = 3
+PAIRING_REQUEST_NETWORK_LIMIT = 10
+PAIRING_SECURITY_EVENT_RETENTION = timedelta(days=30)
 PAIRING_COMPARISON_CODE_LENGTH = 6
 PAIRING_REQUEST_MESSAGE = "If the account exists, a pairing request has been created."
 PAIRING_REQUEST_INVALID_MESSAGE = "The pairing request is invalid."
@@ -46,11 +51,16 @@ PAIRING_APPROVAL_FAILURE = "The pairing request could not be approved."
 PAIRING_REJECTION_FAILURE = "The pairing request could not be rejected."
 PAIRING_ENROLLMENT_FAILURE = "The pairing enrollment failed."
 PAIRING_MAX_ATTEMPTS = 10
+PAIRING_RATE_LIMIT_MESSAGE = "Too many attempts. Try again later."
 _PAIRING_CODE_RE = re.compile(r"^[0-9]{6}$")
 
 
 class PairingRequestError(ValueError):
     """Raised when a pairing request cannot be safely created."""
+
+
+class PairingRateLimitedError(PairingRequestError):
+    """Raised when pairing creation has exhausted an account or network bucket."""
 
 
 class PairingApprovalError(ValueError):
@@ -61,11 +71,99 @@ class PairingRejectionError(ValueError):
     """Raised when a trusted-device rejection cannot be safely completed."""
 
 
+class PairingSecurityEventStore(Protocol):
+    """Persistence boundary for bounded pairing audit events."""
+
+    async def create(
+        self,
+        event_type: str,
+        outcome: str,
+        expires_at: datetime,
+        *,
+        user_id: UUID | None = None,
+        device_id: UUID | None = None,
+        network_fingerprint: bytes | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> object: ...
+
+
+class PairingRateLimiter(Protocol):
+    """Small common surface shared by process-local and persistent limiters."""
+
+    @property
+    def secret(self) -> bytes: ...
+
+    def allow_many(
+        self,
+        requests: Sequence[tuple[str, str, int, timedelta]],
+        *,
+        now: datetime | None = None,
+    ) -> bool | Awaitable[bool]: ...
+
+
+async def _record_security_event(
+    event_store: PairingSecurityEventStore | None,
+    event_type: str,
+    outcome: str,
+    now: datetime,
+    *,
+    user_id: UUID | None = None,
+    device_id: UUID | None = None,
+    network_fingerprint: bytes | None = None,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    """Best-effort audit logging that never stores pairing secrets."""
+
+    if event_store is None:
+        return
+    creator = getattr(event_store, "create", None)
+    if not callable(creator):
+        creator = getattr(event_store, "record", None)
+    if not callable(creator):
+        return
+    try:
+        result = creator(
+            event_type,
+            outcome,
+            now + PAIRING_SECURITY_EVENT_RETENTION,
+            user_id=user_id,
+            device_id=device_id,
+            network_fingerprint=network_fingerprint,
+            details=details,
+        )
+        if isinstance(result, Awaitable):
+            await result
+    except Exception:
+        # Audit persistence must not turn a safe generic response into an oracle or
+        # prevent a valid request from completing when the event store is unavailable.
+        return
+
+
+def _network_event_fingerprint(
+    rate_limiter: PairingRateLimiter | None,
+    network_identifier: str,
+) -> bytes | None:
+    """Derive the event fingerprint without retaining the raw network identifier."""
+
+    if rate_limiter is None:
+        return None
+    try:
+        return network_fingerprint(network_identifier, rate_limiter.secret)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 class PairingAccountStore(Protocol):
     async def get_by_email(self, email_normalized: str) -> AccountRecord | None: ...
 
 
 class PairingRequestStore(Protocol):
+    async def get_pending_by_fingerprint(
+        self,
+        account_id: UUID,
+        requested_fingerprint: bytes,
+    ) -> PairingRequestRecord | None: ...
+
     async def create(
         self,
         account_id: UUID,
@@ -161,13 +259,57 @@ class PairingRequestService:
         request_store: PairingRequestStore,
         *,
         clock: Callable[[], datetime] | None = None,
+        rate_limiter: PairingRateLimiter | None = None,
+        security_event_store: PairingSecurityEventStore | None = None,
     ) -> None:
         self.account_store = account_store
         self.request_store = request_store
         self._clock = clock or (lambda: datetime.now(UTC))
+        self.rate_limiter = rate_limiter
+        self.security_event_store = security_event_store
 
     def _now(self) -> datetime:
         return _utc_now(self._clock)
+
+    async def _allow_creation(
+        self,
+        email_normalized: str,
+        network_identifier: str,
+        account: AccountRecord | None,
+        *,
+        now: datetime,
+    ) -> bool:
+        """Consume email, network, and (when known) account request buckets together."""
+
+        if self.rate_limiter is None:
+            return True
+        requests: list[tuple[str, str, int, timedelta]] = [
+            (
+                "pairing:create:email",
+                email_normalized,
+                PAIRING_REQUEST_EMAIL_LIMIT,
+                PAIRING_REQUEST_RATE_LIMIT_WINDOW,
+            ),
+            (
+                "pairing:create:network",
+                network_identifier,
+                PAIRING_REQUEST_NETWORK_LIMIT,
+                PAIRING_REQUEST_RATE_LIMIT_WINDOW,
+            ),
+        ]
+        if account is not None:
+            requests.append(
+                (
+                    "pairing:create:account",
+                    str(account.id),
+                    PAIRING_REQUEST_ACCOUNT_LIMIT,
+                    PAIRING_REQUEST_RATE_LIMIT_WINDOW,
+                )
+            )
+        result = self.rate_limiter.allow_many(requests, now=now)
+        if isinstance(result, bool):
+            return result
+        return await result
 
     async def create_request(
         self,
@@ -176,6 +318,7 @@ class PairingRequestService:
         label: str,
         *,
         fingerprint: bytes | None = None,
+        network_identifier: str = "unknown",
     ) -> PairingRequestResult:
         """Create a pending request without creating an application session."""
 
@@ -197,11 +340,30 @@ class PairingRequestService:
             ):
                 raise PairingRequestError
 
+        account = await self.account_store.get_by_email(email_normalized)
         now = self._now()
+        network_value = network_identifier.strip() or "unknown"
+        network_digest = _network_event_fingerprint(self.rate_limiter, network_value)
+        if not await self._allow_creation(
+            email_normalized,
+            network_value,
+            account,
+            now=now,
+        ):
+            await _record_security_event(
+                self.security_event_store,
+                "rate_limited",
+                "blocked",
+                now,
+                user_id=None if account is None else account.id,
+                network_fingerprint=network_digest,
+                details={"scope": "pairing_creation"},
+            )
+            raise PairingRateLimitedError
+
         expires_at = now + PAIRING_REQUEST_LIFETIME
         comparison_code = generate_comparison_code()
         request_nonce = secrets.token_bytes(32)
-        account = await self.account_store.get_by_email(email_normalized)
         if account is None:
             # Keep the public contract identical for unknown accounts. This metadata is
             # deliberately not persisted, so it cannot be used to create a session later.
@@ -215,6 +377,34 @@ class PairingRequestService:
                 expires_at=expires_at,
             )
 
+        get_pending = getattr(self.request_store, "get_pending_by_fingerprint", None)
+        if callable(get_pending):
+            pending = await get_pending(account.id, calculated_fingerprint)
+            if pending is not None:
+                await _record_security_event(
+                    self.security_event_store,
+                    "pairing_failed",
+                    "blocked",
+                    now,
+                    user_id=account.id,
+                    network_fingerprint=network_digest,
+                    details={
+                        "reason": "duplicate_pending_request",
+                        "request_id": str(pending.id),
+                    },
+                )
+                # Keep the public contract indistinguishable from an unknown account.  The
+                # original browser retains the only usable comparison code.
+                return PairingRequestResult(
+                    request=None,
+                    request_id=uuid4(),
+                    requested_fingerprint=calculated_fingerprint,
+                    request_nonce=request_nonce,
+                    comparison_code=comparison_code,
+                    created_at=now,
+                    expires_at=expires_at,
+                )
+
         record = await self.request_store.create(
             account.id,
             normalized_key,
@@ -223,6 +413,15 @@ class PairingRequestService:
             request_nonce,
             hash_secret(comparison_code),
             expires_at,
+        )
+        await _record_security_event(
+            self.security_event_store,
+            "pairing_created",
+            "success",
+            now,
+            user_id=account.id,
+            network_fingerprint=network_digest,
+            details={"request_id": str(record.id)},
         )
         return PairingRequestResult(
             request=record,
@@ -256,6 +455,8 @@ class PairingApprovalService:
         *,
         clock: Callable[[], datetime] | None = None,
         maximum_attempts: int = PAIRING_MAX_ATTEMPTS,
+        rate_limiter: PairingRateLimiter | None = None,
+        security_event_store: PairingSecurityEventStore | None = None,
     ) -> None:
         if not 1 <= maximum_attempts <= 10:
             raise ValueError("maximum pairing attempts must be between 1 and 10")
@@ -264,6 +465,8 @@ class PairingApprovalService:
         self.request_store = request_store
         self.maximum_attempts = maximum_attempts
         self._clock = clock or (lambda: datetime.now(UTC))
+        self.rate_limiter = rate_limiter
+        self.security_event_store = security_event_store
 
     def _now(self) -> datetime:
         return _utc_now(self._clock)
@@ -300,7 +503,7 @@ class PairingApprovalService:
         account, _ = await self._trusted_device(account_id, device_id, session=session)
         return await self.request_store.list_pending_for_account(account.id)
 
-    async def approve_request(
+    async def _approve_request(
         self,
         account_id: UUID,
         device_id: UUID,
@@ -318,19 +521,18 @@ class PairingApprovalService:
             device_id,
             session=session,
         )
-        if not isinstance(comparison_code, str) or not _PAIRING_CODE_RE.fullmatch(comparison_code):
-            raise PairingApprovalError
-        if not isinstance(approval_nonce, bytes | bytearray) or len(approval_nonce) != 32:
-            raise PairingApprovalError
-        if not isinstance(signature, bytes | bytearray) or len(signature) != 64:
-            raise PairingApprovalError
-
         request = await self.request_store.record_comparison_attempt(
             account.id,
             request_id,
             self.maximum_attempts,
         )
         if request is None:
+            raise PairingApprovalError
+        if not isinstance(comparison_code, str) or not _PAIRING_CODE_RE.fullmatch(comparison_code):
+            raise PairingApprovalError
+        if not isinstance(approval_nonce, bytes | bytearray) or len(approval_nonce) != 32:
+            raise PairingApprovalError
+        if not isinstance(signature, bytes | bytearray) or len(signature) != 64:
             raise PairingApprovalError
         try:
             supplied_hash = hash_secret(comparison_code)
@@ -376,7 +578,64 @@ class PairingApprovalService:
             approval_payload=approval_payload,
         )
 
-    async def reject_request(
+    async def approve_request(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        request_id: UUID,
+        comparison_code: str,
+        approval_nonce: bytes,
+        signature: bytes,
+        *,
+        session: SessionRecord | None = None,
+        network_identifier: str = "unknown",
+    ) -> PairingApprovalResult:
+        """Approve one request and record success or bounded failure metadata."""
+
+        now = self._now()
+        network_digest = _network_event_fingerprint(self.rate_limiter, network_identifier)
+        try:
+            result = await self._approve_request(
+                account_id,
+                device_id,
+                request_id,
+                comparison_code,
+                approval_nonce,
+                signature,
+                session=session,
+            )
+        except PairingApprovalError:
+            outcome = "failure"
+            try:
+                current = await self.request_store.get_by_id(account_id, request_id)
+                if current is not None and current.attempt_count >= self.maximum_attempts:
+                    outcome = "blocked"
+            except Exception:
+                pass
+            await _record_security_event(
+                self.security_event_store,
+                "pairing_failed",
+                outcome,
+                now,
+                user_id=account_id,
+                device_id=device_id,
+                network_fingerprint=network_digest,
+                details={"request_id": str(request_id)},
+            )
+            raise
+        await _record_security_event(
+            self.security_event_store,
+            "pairing_approved",
+            "success",
+            now,
+            user_id=result.account.id,
+            device_id=result.approving_device.id,
+            network_fingerprint=network_digest,
+            details={"request_id": str(result.request.id)},
+        )
+        return result
+
+    async def _reject_request(
         self,
         account_id: UUID,
         device_id: UUID,
@@ -390,6 +649,50 @@ class PairingApprovalService:
         rejected = await self.request_store.reject(account.id, request_id)
         if rejected is None:
             raise PairingRejectionError
+        return rejected
+
+    async def reject_request(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        request_id: UUID,
+        *,
+        session: SessionRecord | None = None,
+        network_identifier: str = "unknown",
+    ) -> PairingRequestRecord:
+        """Reject one request and record a bounded audit event."""
+
+        now = self._now()
+        network_digest = _network_event_fingerprint(self.rate_limiter, network_identifier)
+        try:
+            rejected = await self._reject_request(
+                account_id,
+                device_id,
+                request_id,
+                session=session,
+            )
+        except (PairingApprovalError, PairingRejectionError):
+            await _record_security_event(
+                self.security_event_store,
+                "pairing_failed",
+                "failure",
+                now,
+                user_id=account_id,
+                device_id=device_id,
+                network_fingerprint=network_digest,
+                details={"request_id": str(request_id), "action": "reject"},
+            )
+            raise
+        await _record_security_event(
+            self.security_event_store,
+            "pairing_rejected",
+            "success",
+            now,
+            user_id=account_id,
+            device_id=device_id,
+            network_fingerprint=network_digest,
+            details={"request_id": str(rejected.id)},
+        )
         return rejected
 
 
@@ -762,6 +1065,13 @@ def _encoded_value(primary: str | None, alias: str | None) -> str:
     return value
 
 
+def _network_identifier(request: Request) -> str:
+    """Return the source identifier used only for HMAC bucket derivation."""
+
+    client = request.client
+    return "unknown" if client is None or not client.host else client.host
+
+
 router = APIRouter(prefix="/auth", tags=["pairing"])
 
 
@@ -792,7 +1102,13 @@ async def create_pairing_request(
             fingerprint=(
                 None if fingerprint_value is None else _decode_fingerprint(fingerprint_value)
             ),
+            network_identifier=_network_identifier(request),
         )
+    except PairingRateLimitedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=PAIRING_RATE_LIMIT_MESSAGE,
+        ) from error
     except (DeviceCryptoError, PairingRequestError, ValueError, TypeError) as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -844,6 +1160,7 @@ async def approve_pairing_request(
             _decode_nonce(payload.approval_nonce),
             _decode_signature(payload.signature),
             session=session,
+            network_identifier=_network_identifier(request),
         )
     except (DeviceCryptoError, PairingApprovalError, ValueError, TypeError) as error:
         raise HTTPException(
@@ -873,6 +1190,7 @@ async def reject_pairing_request(
             session.device_id,
             request_id,
             session=session,
+            network_identifier=_network_identifier(request),
         )
     except (PairingRejectionError, PairingApprovalError, ValueError, TypeError) as error:
         raise HTTPException(
@@ -974,15 +1292,23 @@ __all__ = [
     "PAIRING_APPROVAL_FAILURE",
     "PAIRING_ENROLLMENT_FAILURE",
     "PAIRING_MAX_ATTEMPTS",
+    "PAIRING_RATE_LIMIT_MESSAGE",
+    "PAIRING_REQUEST_ACCOUNT_LIMIT",
+    "PAIRING_REQUEST_EMAIL_LIMIT",
     "PAIRING_REJECTION_FAILURE",
     "PAIRING_COMPARISON_CODE_LENGTH",
     "PAIRING_REQUEST_INVALID_MESSAGE",
     "PAIRING_REQUEST_LIFETIME",
     "PAIRING_REQUEST_MESSAGE",
+    "PAIRING_REQUEST_NETWORK_LIMIT",
+    "PAIRING_REQUEST_RATE_LIMIT_WINDOW",
+    "PAIRING_SECURITY_EVENT_RETENTION",
     "PairingRequestCreateRequest",
     "PairingRequestError",
+    "PairingRateLimitedError",
     "PairingRequestResult",
     "PairingRequestService",
+    "PairingSecurityEventStore",
     "PairingApprovalError",
     "PairingApprovalRequest",
     "PairingApprovalResult",

@@ -31,9 +31,11 @@ from app.repositories import (
     InMemoryDeviceChallengeRepository,
     InMemoryDeviceRepository,
     InMemoryPairingRequestRepository,
+    InMemorySecurityEventRepository,
     PairingRequestRepository,
     PersistentRateLimiter,
     RateLimitBucketRepository,
+    SecurityEventRepository,
     SessionRepository,
 )
 from app.security import ConfiguredCORSMiddleware
@@ -90,6 +92,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if settings.app_env == "test"
         else PairingRequestRepository(database)
     )
+    security_event_repository = (
+        InMemorySecurityEventRepository()
+        if settings.app_env == "test"
+        else SecurityEventRepository(database)
+    )
     device_auth_service = DeviceAuthService(
         account_store,
         device_repository,
@@ -108,14 +115,19 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.device_repository = device_repository
     application.state.device_challenge_repository = challenge_repository
     application.state.pairing_repository = pairing_repository
+    application.state.security_event_repository = security_event_repository
     application.state.pairing_request_service = PairingRequestService(
         account_store,
         pairing_repository,
+        rate_limiter=rate_limiter,
+        security_event_store=security_event_repository,
     )
     application.state.pairing_approval_service = PairingApprovalService(
         account_store,
         device_repository,
         cast(PairingApprovalStore, pairing_repository),
+        rate_limiter=rate_limiter,
+        security_event_store=security_event_repository,
     )
     application.state.pairing_enrollment_service = PairingEnrollmentService(
         account_store,

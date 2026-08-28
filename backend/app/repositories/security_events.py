@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping
-from datetime import datetime
-from uuid import UUID
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 from .base import RepositoryDatabase, as_row, first_row, required_row
 from .models import SecurityEventRecord, security_event_from_row
@@ -155,6 +156,96 @@ class SecurityEventRepository:
         """Compatibility name for callers that use ``by_account`` terminology."""
 
         return await self.list_for_account(account_id, limit)
+
+
+class InMemorySecurityEventRepository:
+    """Small explicit test-only event store used by the test application."""
+
+    def __init__(self) -> None:
+        self._events: list[SecurityEventRecord] = []
+        self._lock = threading.Lock()
+
+    @property
+    def events(self) -> tuple[SecurityEventRecord, ...]:
+        """Return a stable snapshot for focused service and API tests."""
+
+        with self._lock:
+            return tuple(self._events)
+
+    async def get_by_id(
+        self,
+        account_id: UUID,
+        event_id: UUID,
+    ) -> SecurityEventRecord | None:
+        with self._lock:
+            return next(
+                (
+                    event
+                    for event in self._events
+                    if event.user_id == account_id and event.id == event_id
+                ),
+                None,
+            )
+
+    async def list_for_account(
+        self,
+        account_id: UUID,
+        limit: int = 100,
+    ) -> list[SecurityEventRecord]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._lock:
+            events = [event for event in self._events if event.user_id == account_id]
+        return events[:limit]
+
+    async def create(
+        self,
+        event_type: str,
+        outcome: str,
+        expires_at: datetime,
+        *,
+        user_id: UUID | None = None,
+        device_id: UUID | None = None,
+        network_fingerprint: bytes | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> SecurityEventRecord:
+        event = SecurityEventRecord(
+            id=uuid4(),
+            user_id=user_id,
+            device_id=device_id,
+            event_type=event_type,
+            outcome=outcome,
+            network_fingerprint=(
+                None if network_fingerprint is None else bytes(network_fingerprint)
+            ),
+            details=dict(details or {}),
+            created_at=datetime.now(UTC),
+            expires_at=expires_at,
+        )
+        with self._lock:
+            self._events.append(event)
+        return event
+
+    async def record(
+        self,
+        event_type: str,
+        outcome: str,
+        expires_at: datetime,
+        *,
+        user_id: UUID | None = None,
+        device_id: UUID | None = None,
+        network_fingerprint: bytes | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> SecurityEventRecord:
+        return await self.create(
+            event_type,
+            outcome,
+            expires_at,
+            user_id=user_id,
+            device_id=device_id,
+            network_fingerprint=network_fingerprint,
+            details=details,
+        )
 
 
 # Keep the table-oriented name available to callers.

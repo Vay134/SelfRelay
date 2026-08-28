@@ -27,7 +27,11 @@ from .models import (
 )
 from .pairings import InMemoryPairingRequestRepository, PairingRepository, PairingRequestRepository
 from .rate_limits import PersistentRateLimiter, RateLimitBucketRepository, RateLimitRepository
-from .security_events import SecurityEventLogRepository, SecurityEventRepository
+from .security_events import (
+    InMemorySecurityEventRepository,
+    SecurityEventLogRepository,
+    SecurityEventRepository,
+)
 from .sessions import SessionRepository
 from .transfers import TransferRepository, TransferRequestRepository
 from .websocket_tickets import WebSocketTicketRepository, WebsocketTicketRepository
@@ -56,6 +60,7 @@ __all__ = [
     "RateLimitRepository",
     "PersistentRateLimiter",
     "SecurityEventLogRepository",
+    "InMemorySecurityEventRepository",
     "SecurityEventRecord",
     "SecurityEventRepository",
     "SessionRecord",
