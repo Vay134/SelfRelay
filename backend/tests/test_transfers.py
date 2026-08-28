@@ -91,12 +91,15 @@ def test_offer_accept_reject_and_cancel_notify_only_selected_participants() -> N
 
         offered = await service.create_offer(account_id, sender_id, recipient_id)
         assert offered.status == "offered"
+        assert await manager.flush_outbound()
         assert recipient_socket.messages[-1]["type"] == "transfer_offer"
         accepted = await service.accept(account_id, offered.id, recipient_id)
         assert accepted.status == "accepted"
+        assert await manager.flush_outbound()
         assert sender_socket.messages[-1]["type"] == "transfer_accepted"
         cancelled = await service.cancel(account_id, offered.id, sender_id)
         assert cancelled.status == "cancelled"
+        assert await manager.flush_outbound()
         assert sender_socket.messages[-1]["type"] == "transfer_cancelled"
         assert recipient_socket.messages[-1]["type"] == "transfer_cancelled"
 
@@ -145,20 +148,24 @@ def test_signaling_transitions_and_forwards_typed_messages_between_selected_devi
         }
         assert await manager.forward_signaling(sender, offer)
         assert (await repository.get_by_id(account_id, transfer.id)).status == "negotiating"  # type: ignore[union-attr]
+        assert await manager.flush_outbound()
         assert recipient_socket.messages[-1] == offer
 
         answer = {**offer, "type": "sdp_answer", "sdp": "v=0\r\na=answer"}
         assert await manager.forward_signaling(recipient, answer)
+        assert await manager.flush_outbound()
         assert sender_socket.messages[-1] == answer
         candidate = {key: value for key, value in offer.items() if key != "sdp"}
         candidate.update({"type": "ice_candidate", "candidate": "candidate:1"})
         assert await manager.forward_signaling(sender, candidate)
+        assert await manager.flush_outbound()
         assert recipient_socket.messages[-1] == candidate
 
         foreign_socket = FakeSocket()
         foreign_sender = _connection(foreign_account_id, foreign_device_id, foreign_socket, now)
         await manager.register(foreign_sender)
         assert not await manager.forward_signaling(foreign_sender, offer)
+        assert await manager.flush_outbound()
         assert foreign_socket.messages == []
 
     asyncio.run(exercise())
@@ -190,6 +197,7 @@ def test_stale_offer_expires_and_oversized_sdp_is_rejected() -> None:
         service = TransferService(repository, manager, devices, clock=lambda: now)
         with_expiry = await service.get(account_id, transfer.id)
         assert with_expiry.status == "expired"
+        assert await manager.flush_outbound()
         assert recipient_socket.messages[-1]["type"] == "transfer_expired"
         with pytest.raises(TransferError):
             await service.accept(account_id, transfer.id, recipient_id)

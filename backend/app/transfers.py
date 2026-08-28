@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Protocol
@@ -10,8 +11,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .presence import PresenceManager
 from .device_crypto import encode_base64url
+from .metrics import RuntimeMetrics
+from .presence import PresenceManager
 from .repositories.models import DeviceRecord, SessionRecord, TransferRequestRecord
 from .security import check_optional_origin
 from .session_api import get_authenticated_session, require_session_csrf
@@ -22,9 +24,12 @@ TRANSFER_ACTIVE_STATUSES = frozenset(
     {"offered", "accepted", "negotiating", "connected", "transferring"}
 )
 TRANSFER_PEER_KEY_STATUSES = frozenset({"accepted", "negotiating"})
+MAX_ACTIVE_TRANSFERS_PER_ACCOUNT = 8
+MAX_ACTIVE_TRANSFERS_PER_DEVICE = 4
 
 TRANSFER_UNAVAILABLE_MESSAGE = "The transfer is unavailable."
 TRANSFER_INVALID_MESSAGE = "The transfer request is invalid."
+TRANSFER_RATE_LIMIT_MESSAGE = "Too many active transfers. Try again later."
 
 
 class TransferRepositoryPort(Protocol):
@@ -83,6 +88,10 @@ class TransferError(ValueError):
     """Raised when transfer state or ownership cannot satisfy an operation."""
 
 
+class TransferCapacityError(TransferError):
+    """Raised when an account or device has reached its active-transfer limit."""
+
+
 def _utc_now(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("transfer timestamps must be timezone-aware")
@@ -107,7 +116,7 @@ def transfer_notification(
     record: TransferRequestRecord,
     message_type: str,
 ) -> dict[str, object]:
-    """Build a metadata-only WebSocket notification."""
+    """Build a metadata-only WebSocket notification the socket can serialize."""
 
     return {
         "type": message_type,
@@ -115,8 +124,8 @@ def transfer_notification(
         "transfer_id": str(record.id),
         "sender_device_id": str(record.sender_device_id),
         "recipient_device_id": str(record.recipient_device_id),
-        "created_at": record.created_at,
-        "expires_at": record.expires_at,
+        "created_at": record.created_at.isoformat(),
+        "expires_at": record.expires_at.isoformat(),
     }
 
 
@@ -131,6 +140,7 @@ class TransferService:
         *,
         clock: Callable[[], datetime] | None = None,
         lifetime: timedelta = TRANSFER_REQUEST_LIFETIME,
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         if lifetime <= timedelta(0):
             raise ValueError("transfer lifetime must be positive")
@@ -139,6 +149,8 @@ class TransferService:
         self._device_repository = device_repository
         self._clock = clock or (lambda: datetime.now(UTC))
         self._lifetime = lifetime
+        self._metrics = metrics or RuntimeMetrics()
+        self._capacity_lock = asyncio.Lock()
 
     async def create_offer(
         self,
@@ -155,19 +167,50 @@ class TransferService:
             raise TransferError("sender and recipient must differ")
         await self._validate_devices(account_id, sender_device_id, recipient_device_id)
         now = _utc_now(self._clock())
-        record = await self._repository.create(
-            account_id,
-            sender_device_id,
-            recipient_device_id,
-            protocol_version,
-            now + self._lifetime,
-        )
+        async with self._capacity_lock:
+            await self._ensure_capacity(account_id, sender_device_id, recipient_device_id, now)
+            record = await self._repository.create(
+                account_id,
+                sender_device_id,
+                recipient_device_id,
+                protocol_version,
+                now + self._lifetime,
+            )
         await self._notify(
             account_id,
             recipient_device_id,
             transfer_notification(record, "transfer_offer"),
         )
         return record
+
+    async def _ensure_capacity(
+        self,
+        account_id: UUID,
+        sender_device_id: UUID,
+        recipient_device_id: UUID,
+        now: datetime,
+    ) -> None:
+        records = await self._repository.list_for_account(account_id)
+        active = [
+            record
+            for record in records
+            if record.status in TRANSFER_ACTIVE_STATUSES and record.expires_at > now
+        ]
+        sender_count = sum(
+            sender_device_id in (record.sender_device_id, record.recipient_device_id)
+            for record in active
+        )
+        recipient_count = sum(
+            recipient_device_id in (record.sender_device_id, record.recipient_device_id)
+            for record in active
+        )
+        if (
+            len(active) >= MAX_ACTIVE_TRANSFERS_PER_ACCOUNT
+            or sender_count >= MAX_ACTIVE_TRANSFERS_PER_DEVICE
+            or recipient_count >= MAX_ACTIVE_TRANSFERS_PER_DEVICE
+        ):
+            self._metrics.increment("transfer_capacity_rejected")
+            raise TransferCapacityError
 
     async def accept(
         self,
@@ -452,6 +495,11 @@ async def create_transfer_offer(
             recipient_device_id,
             payload.protocol_version,
         )
+    except TransferCapacityError as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=TRANSFER_RATE_LIMIT_MESSAGE,
+        ) from error
     except (TransferError, RuntimeError, TypeError, ValueError) as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

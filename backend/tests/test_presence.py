@@ -281,6 +281,7 @@ def test_presence_is_account_scoped_and_heartbeat_expiry_removes_socket() -> Non
         await manager.register(first)
         await manager.register(foreign)
         await manager.broadcast_presence(account_id)
+        assert await manager.flush_outbound()
 
         assert first_socket.messages == [
             {

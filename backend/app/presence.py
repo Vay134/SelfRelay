@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Protocol, cast
 from uuid import UUID, uuid4
@@ -20,6 +20,7 @@ from fastapi import (
     status,
 )
 
+from .metrics import RuntimeMetrics
 from .repositories.models import (
     DeviceRecord,
     SessionRecord,
@@ -38,6 +39,18 @@ MAX_SIGNALING_ICE_CANDIDATE_BYTES = 2048
 MAX_SIGNALING_HANDSHAKE_BYTES = 8 * 1024
 MAX_SIGNALING_ICE_CANDIDATES = 64
 MAX_SIGNALING_MESSAGES = 128
+MAX_SIGNALING_MESSAGES_PER_ACCOUNT = 512
+MAX_SOCKET_MESSAGES = 4096
+MAX_WEBSOCKET_QUEUE_MESSAGES = 32
+MAX_WEBSOCKET_QUEUE_BYTES = 256 * 1024
+# Compatibility alias for socket-focused callers.
+MAX_SOCKET_QUEUE_MESSAGES = MAX_WEBSOCKET_QUEUE_MESSAGES
+MAX_CONNECTIONS_PER_ACCOUNT = 8
+# One socket per device is structural: a newer socket replaces the older one.
+MAX_CONNECTIONS_PER_DEVICE = 1
+MAX_TOTAL_CONNECTIONS = 512
+WEBSOCKET_SEND_TIMEOUT_SECONDS = 5.0
+SIGNALING_STATE_RETENTION = timedelta(minutes=11)
 
 # Descriptive aliases for callers that name limits by their payload type.
 MAX_SDP_BYTES = MAX_SIGNALING_SDP_BYTES
@@ -55,12 +68,21 @@ WEBSOCKET_CLOSE_UNSUPPORTED_DATA = 1003
 WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE = 1009
 WEBSOCKET_CLOSE_HEARTBEAT_TIMEOUT = 4008
 WEBSOCKET_CLOSE_REPLACED = 4001
+WEBSOCKET_CLOSE_TRY_AGAIN = 1013
 
 SIGNALING_OFFER_MESSAGE_TYPE = "sdp_offer"
 SIGNALING_ANSWER_MESSAGE_TYPE = "sdp_answer"
 SIGNALING_ICE_MESSAGE_TYPE = "ice_candidate"
 SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE = "handshake_offer"
 SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE = "handshake_answer"
+SIGNALING_SINGLE_USE_MESSAGE_TYPES = frozenset(
+    {
+        SIGNALING_OFFER_MESSAGE_TYPE,
+        SIGNALING_ANSWER_MESSAGE_TYPE,
+        SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE,
+        SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
+    }
+)
 SIGNALING_MESSAGE_TYPES = frozenset(
     {
         SIGNALING_OFFER_MESSAGE_TYPE,
@@ -117,6 +139,10 @@ class TransferRepositoryPort(Protocol):
     ) -> TransferRequestRecord | None: ...
 
 
+class ConnectionLimitError(RuntimeError):
+    """Raised when an account already has its maximum active sockets."""
+
+
 @dataclass(frozen=True, slots=True)
 class ActiveConnection:
     """One admitted socket bound to one authenticated application session."""
@@ -128,6 +154,27 @@ class ActiveConnection:
     websocket: WebSocket
     connected_at: datetime
     last_heartbeat_at: datetime
+
+
+@dataclass(slots=True)
+class _OutboundQueue:
+    """One bounded writer queue owned by an admitted socket."""
+
+    queue: asyncio.Queue[dict[str, object]]
+    task: asyncio.Task[None] | None = None
+    failed: bool = False
+    queued_bytes: int = 0
+    in_flight: int = 0
+
+
+@dataclass(slots=True)
+class _SignalingUsage:
+    """Per-transfer signaling accounting held only while a transfer stays live."""
+
+    account_id: UUID
+    updated_at: datetime
+    total: int = 0
+    counts: dict[tuple[UUID, str], int] = field(default_factory=dict)
 
 
 class WebSocketTicketService:
@@ -175,6 +222,7 @@ class PresenceManager:
         *,
         clock: Callable[[], datetime] | None = None,
         heartbeat_timeout: timedelta = PRESENCE_HEARTBEAT_TIMEOUT,
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         if heartbeat_timeout <= timedelta(0):
             raise ValueError("heartbeat timeout must be positive")
@@ -183,23 +231,58 @@ class PresenceManager:
         self._transfer_repository = transfer_repository
         self._clock = clock or (lambda: datetime.now(UTC))
         self._heartbeat_timeout = heartbeat_timeout
+        self._metrics = metrics or RuntimeMetrics()
         self._connections: dict[UUID, dict[UUID, ActiveConnection]] = {}
-        self._signaling_counts: dict[tuple[UUID, UUID, str], int] = {}
-        self._signaling_totals: dict[UUID, int] = {}
+        self._outbound: dict[UUID, _OutboundQueue] = {}
+        self._signaling: dict[UUID, _SignalingUsage] = {}
+        self._signaling_account_totals: dict[UUID, int] = {}
         self._lock = asyncio.Lock()
+
+    @property
+    def metrics(self) -> RuntimeMetrics:
+        """Return coarse resource counters for this manager."""
+
+        return self._metrics
 
     async def register(self, connection: ActiveConnection) -> ActiveConnection | None:
         """Register a socket and return the replaced socket for that device."""
 
+        previous_outbound: _OutboundQueue | None = None
         async with self._lock:
             account_connections = self._connections.setdefault(connection.account_id, {})
             previous = account_connections.get(connection.device_id)
+            if previous is None and not self._has_connection_capacity(account_connections):
+                if not account_connections:
+                    del self._connections[connection.account_id]
+                self._metrics.increment("socket_connection_rejected")
+                raise ConnectionLimitError
             account_connections[connection.device_id] = connection
-            return previous
+            if previous is not None:
+                previous_outbound = self._outbound.pop(previous.id, None)
+            queue = _OutboundQueue(asyncio.Queue(maxsize=MAX_WEBSOCKET_QUEUE_MESSAGES))
+            queue.task = asyncio.create_task(self._drain_outbound(connection, queue))
+            self._outbound[connection.id] = queue
+        await self._stop_outbound(previous_outbound)
+        self._metrics.increment("socket_registered")
+        return previous
+
+    def _has_connection_capacity(self, account_connections: dict[UUID, ActiveConnection]) -> bool:
+        """Return whether one more socket fits the account and process-wide limits."""
+
+        return (
+            len(account_connections) < MAX_CONNECTIONS_PER_ACCOUNT
+            and self.active_socket_count() < MAX_TOTAL_CONNECTIONS
+        )
+
+    def active_socket_count(self) -> int:
+        """Return the number of sockets currently registered across all accounts."""
+
+        return sum(len(sockets) for sockets in self._connections.values())
 
     async def remove(self, connection: ActiveConnection) -> bool:
         """Remove a socket only when it is still the current device socket."""
 
+        outbound: _OutboundQueue | None = None
         async with self._lock:
             account_connections = self._connections.get(connection.account_id)
             if account_connections is None:
@@ -210,7 +293,9 @@ class PresenceManager:
             del account_connections[connection.device_id]
             if not account_connections:
                 del self._connections[connection.account_id]
-            return True
+            outbound = self._outbound.pop(connection.id, None)
+        await self._stop_outbound(outbound)
+        return True
 
     async def heartbeat(self, connection: ActiveConnection) -> ActiveConnection | None:
         """Refresh a socket heartbeat after rechecking its session when available."""
@@ -268,12 +353,108 @@ class PresenceManager:
         connection = await self.connection_for(account_id, device_id)
         if connection is None:
             return False
+        return await self._enqueue_outbound(connection, payload)
+
+    async def _enqueue_outbound(
+        self,
+        connection: ActiveConnection,
+        payload: dict[str, object],
+    ) -> bool:
+        """Queue one payload for a live socket, closing it when the queue overflows."""
+
+        size = _payload_bytes(payload)
+        async with self._lock:
+            current = self._connections.get(connection.account_id, {}).get(connection.device_id)
+            outbound = self._outbound.get(connection.id)
+            if (
+                current is None
+                or current.id != connection.id
+                or outbound is None
+                or outbound.failed
+            ):
+                return False
+            if (
+                outbound.queue.qsize() >= MAX_WEBSOCKET_QUEUE_MESSAGES
+                or outbound.queued_bytes + size > MAX_WEBSOCKET_QUEUE_BYTES
+            ):
+                outbound.failed = True
+                self._metrics.increment("socket_queue_rejected")
+            else:
+                outbound.queue.put_nowait(payload)
+                outbound.queued_bytes += size
+                return True
+        await self._drop(connection)
+        return False
+
+    async def _drain_outbound(
+        self,
+        connection: ActiveConnection,
+        outbound: _OutboundQueue,
+    ) -> None:
+        """Write queued payloads one at a time so a slow socket cannot block senders."""
+
+        while True:
+            payload = await outbound.queue.get()
+            async with self._lock:
+                outbound.queued_bytes = max(0, outbound.queued_bytes - _payload_bytes(payload))
+                outbound.in_flight += 1
+            try:
+                await asyncio.wait_for(
+                    connection.websocket.send_json(payload),
+                    timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                outbound.failed = True
+                raise
+            except TimeoutError:
+                self._metrics.increment("socket_send_timeout")
+                await self._fail_outbound(connection, outbound)
+                return
+            except Exception:
+                self._metrics.increment("socket_send_failed")
+                await self._fail_outbound(connection, outbound)
+                return
+            async with self._lock:
+                outbound.in_flight -= 1
+
+    async def _fail_outbound(
+        self,
+        connection: ActiveConnection,
+        outbound: _OutboundQueue,
+    ) -> None:
+        async with self._lock:
+            outbound.failed = True
+            outbound.in_flight -= 1
+        await self._drop(connection)
+
+    async def flush_outbound(
+        self,
+        timeout: float = WEBSOCKET_SEND_TIMEOUT_SECONDS,
+    ) -> bool:
+        """Wait for queued payloads to be written, bounded by ``timeout``."""
+
+        async def drained() -> None:
+            while await self._outbound_pending():
+                await asyncio.sleep(0)
+
         try:
-            await connection.websocket.send_json(payload)
-        except Exception:
-            await self.remove(connection)
+            await asyncio.wait_for(drained(), timeout=timeout)
+        except TimeoutError:
             return False
         return True
+
+    async def _outbound_pending(self) -> bool:
+        async with self._lock:
+            return any(
+                not outbound.queue.empty() or outbound.in_flight > 0
+                for outbound in self._outbound.values()
+            )
+
+    async def _drop(self, connection: ActiveConnection) -> None:
+        """Release one socket's state and close it with a retryable code."""
+
+        await self.remove(connection)
+        await _close(connection.websocket, WEBSOCKET_CLOSE_TRY_AGAIN)
 
     async def forward_signaling(
         self,
@@ -289,18 +470,23 @@ class PresenceManager:
 
         repository = self._transfer_repository
         if repository is None:
+            self._metrics.increment("signaling_rejected")
             return False
+        await self._prune_signaling_state(_utc_now(self._clock()))
         parsed = _parse_signaling_message(message, self._clock())
         if parsed is None:
+            self._metrics.increment("signaling_rejected")
             return False
         transfer_id, sender_device_id, recipient_device_id, message_type = parsed
         transfer = await repository.get_by_id(connection.account_id, transfer_id)
         if transfer is None or not _active_transfer(transfer, self._clock()):
             if transfer is not None:
                 await self._clear_signaling_state(transfer.id)
+            self._metrics.increment("signaling_rejected")
             return False
         message_expiry = _message_expiry(message.get("expires_at"), self._clock())
         if message_expiry is None or message_expiry > transfer.expires_at:
+            self._metrics.increment("signaling_rejected")
             return False
         if (
             transfer.protocol_version != message["v"]
@@ -308,6 +494,7 @@ class PresenceManager:
             or transfer.recipient_device_id != recipient_device_id
             or connection.device_id not in (sender_device_id, recipient_device_id)
         ):
+            self._metrics.increment("signaling_rejected")
             return False
 
         if message_type == SIGNALING_OFFER_MESSAGE_TYPE:
@@ -315,62 +502,56 @@ class PresenceManager:
                 "accepted",
                 "negotiating",
             }:
+                self._metrics.increment("signaling_rejected")
                 return False
             if transfer.status == "accepted":
                 transition = getattr(repository, "mark_negotiating", None)
                 if not callable(transition):
+                    self._metrics.increment("signaling_rejected")
                     return False
                 negotiating = await transition(connection.account_id, transfer.id)
                 if negotiating is None:
+                    self._metrics.increment("signaling_rejected")
                     return False
         elif message_type in {
             SIGNALING_ANSWER_MESSAGE_TYPE,
             SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
         }:
             if connection.device_id != recipient_device_id or transfer.status != "negotiating":
+                self._metrics.increment("signaling_rejected")
                 return False
         elif message_type == SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE:
             if connection.device_id != sender_device_id or transfer.status not in {
                 "accepted",
                 "negotiating",
             }:
+                self._metrics.increment("signaling_rejected")
                 return False
             if transfer.status == "accepted":
                 transition = getattr(repository, "mark_negotiating", None)
                 if not callable(transition):
+                    self._metrics.increment("signaling_rejected")
                     return False
                 negotiating = await transition(connection.account_id, transfer.id)
                 if negotiating is None:
+                    self._metrics.increment("signaling_rejected")
                     return False
         elif transfer.status not in {"accepted", "negotiating"}:
+            self._metrics.increment("signaling_rejected")
             return False
 
-        count_key = (transfer.id, connection.device_id, message_type)
-        async with self._lock:
-            count = self._signaling_counts.get(count_key, 0)
-            maximum = (
-                1
-                if message_type
-                in {
-                    SIGNALING_OFFER_MESSAGE_TYPE,
-                    SIGNALING_ANSWER_MESSAGE_TYPE,
-                    SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE,
-                    SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
-                }
-                else MAX_SIGNALING_ICE_CANDIDATES
-            )
-            if count >= maximum:
-                return False
-            total = self._signaling_totals.get(transfer.id, 0)
-            if total >= MAX_SIGNALING_MESSAGES:
-                return False
-            self._signaling_counts[count_key] = count + 1
-            self._signaling_totals[transfer.id] = total + 1
+        if not await self._record_signaling_use(transfer.id, connection, message_type):
+            self._metrics.increment("signaling_rejected")
+            return False
 
         target_device_id = (
             recipient_device_id if connection.device_id == sender_device_id else sender_device_id
         )
-        await self.send_to_device(connection.account_id, target_device_id, message)
+        forwarded = await self.send_to_device(connection.account_id, target_device_id, message)
+        if not forwarded:
+            self._metrics.increment("signaling_rejected")
+            return False
+        self._metrics.increment("signaling_forwarded")
         return True
 
     async def online_devices(self, account_id: UUID) -> list[dict[str, object]]:
@@ -388,23 +569,17 @@ class PresenceManager:
     async def broadcast_presence(self, account_id: UUID) -> None:
         """Notify only sockets belonging to the changed account."""
 
-        payload = {
+        payload: dict[str, object] = {
             "type": PRESENCE_EVENT_TYPE,
             "devices": await self.online_devices(account_id),
         }
-        targets = await self.online_connections(account_id)
-        failed: list[ActiveConnection] = []
-        for connection in targets:
-            try:
-                await connection.websocket.send_json(payload)
-            except Exception:
-                failed.append(connection)
-        for connection in failed:
-            await self.remove(connection)
+        for connection in await self.online_connections(account_id):
+            await self._enqueue_outbound(connection, payload)
 
     async def disconnect_device(self, account_id: UUID, device_id: UUID) -> None:
         """Close and remove the current socket for one account-owned device."""
 
+        outbound: _OutboundQueue | None = None
         async with self._lock:
             account_connections = self._connections.get(account_id)
             if account_connections is None:
@@ -415,7 +590,9 @@ class PresenceManager:
                     del account_connections[device_id]
                     if not account_connections:
                         del self._connections[account_id]
+                    outbound = self._outbound.pop(connection.id, None)
         if connection is not None:
+            await self._stop_outbound(outbound)
             await _close(connection.websocket, WEBSOCKET_CLOSE_POLICY)
             await self.broadcast_presence(account_id)
 
@@ -436,9 +613,13 @@ class PresenceManager:
                 for account_connections in self._connections.values()
                 for connection in account_connections.values()
             ]
+            outbound = list(self._outbound.values())
             self._connections.clear()
-            self._signaling_counts.clear()
-            self._signaling_totals.clear()
+            self._outbound.clear()
+            self._signaling.clear()
+            self._signaling_account_totals.clear()
+        for queue in outbound:
+            await self._stop_outbound(queue)
         for connection in connections:
             await _close(connection.websocket, 1001)
 
@@ -460,13 +641,106 @@ class PresenceManager:
                 if not account_connections:
                     self._connections.pop(current_account_id, None)
         for connection in expired:
+            async with self._lock:
+                outbound = self._outbound.pop(connection.id, None)
+            await self._stop_outbound(outbound)
+            self._metrics.increment("socket_heartbeat_timeout")
             await _close(connection.websocket, WEBSOCKET_CLOSE_HEARTBEAT_TIMEOUT)
+
+        await self._prune_signaling_state(now)
+
+    async def cleanup(self) -> dict[str, int]:
+        """Prune stale sockets and signaling state and return coarse counts."""
+
+        before = self._metrics.value("signaling_state_cleaned")
+        await self.prune_expired()
+        after = self._metrics.value("signaling_state_cleaned")
+        return {"signaling_state": after - before}
+
+    async def _stop_outbound(self, outbound: _OutboundQueue | None) -> None:
+        if outbound is None:
+            return
+        outbound.failed = True
+        outbound.queued_bytes = 0
+        while True:
+            try:
+                outbound.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        task = outbound.task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _prune_signaling_state(self, now: datetime) -> None:
+        cutoff = _utc_now(now) - SIGNALING_STATE_RETENTION
+        async with self._lock:
+            stale_transfers = [
+                transfer_id
+                for transfer_id, usage in self._signaling.items()
+                if usage.updated_at <= cutoff
+            ]
+            for transfer_id in stale_transfers:
+                self._release_signaling(transfer_id)
+        if stale_transfers:
+            self._metrics.increment("signaling_state_cleaned", len(stale_transfers))
+
+    async def _record_signaling_use(
+        self,
+        transfer_id: UUID,
+        connection: ActiveConnection,
+        message_type: str,
+    ) -> bool:
+        """Charge one message against its transfer, device, and account budgets."""
+
+        maximum = (
+            1
+            if message_type in SIGNALING_SINGLE_USE_MESSAGE_TYPES
+            else MAX_SIGNALING_ICE_CANDIDATES
+        )
+        count_key = (connection.device_id, message_type)
+        async with self._lock:
+            usage = self._signaling.get(transfer_id)
+            if usage is None:
+                usage = _SignalingUsage(
+                    account_id=connection.account_id,
+                    updated_at=_utc_now(self._clock()),
+                )
+                self._signaling[transfer_id] = usage
+            account_total = self._signaling_account_totals.get(connection.account_id, 0)
+            if (
+                usage.counts.get(count_key, 0) >= maximum
+                or usage.total >= MAX_SIGNALING_MESSAGES
+                or account_total >= MAX_SIGNALING_MESSAGES_PER_ACCOUNT
+            ):
+                return False
+            usage.counts[count_key] = usage.counts.get(count_key, 0) + 1
+            usage.total += 1
+            usage.updated_at = _utc_now(self._clock())
+            self._signaling_account_totals[connection.account_id] = account_total + 1
+            return True
+
+    def _release_signaling(self, transfer_id: UUID) -> bool:
+        """Release one transfer's signaling budget. Callers must hold the lock."""
+
+        usage = self._signaling.pop(transfer_id, None)
+        if usage is None:
+            return False
+        remaining = self._signaling_account_totals.get(usage.account_id, 0) - usage.total
+        if remaining > 0:
+            self._signaling_account_totals[usage.account_id] = remaining
+        else:
+            self._signaling_account_totals.pop(usage.account_id, None)
+        return True
 
     async def _clear_signaling_state(self, transfer_id: UUID) -> None:
         async with self._lock:
-            self._signaling_totals.pop(transfer_id, None)
-            for key in [key for key in self._signaling_counts if key[0] == transfer_id]:
-                self._signaling_counts.pop(key, None)
+            cleared = self._release_signaling(transfer_id)
+        if cleared:
+            self._metrics.increment("signaling_state_cleaned")
 
     async def _device(self, account_id: UUID, device_id: UUID) -> DeviceRecord | None:
         if self._device_repository is None:
@@ -511,10 +785,22 @@ def _query_ticket(websocket: WebSocket) -> str | None:
     return values[0] if len(values) == 1 else None
 
 
+def _payload_bytes(payload: dict[str, object]) -> int:
+    """Return the encoded size used for outbound queue accounting."""
+
+    try:
+        return len(json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return MAX_WEBSOCKET_QUEUE_BYTES + 1
+
+
 async def _close(websocket: WebSocket, code: int) -> None:
     try:
-        await websocket.close(code=code)
-    except Exception:
+        await asyncio.wait_for(
+            websocket.close(code=code),
+            timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS,
+        )
+    except (Exception, TimeoutError):
         return
 
 
@@ -692,7 +978,13 @@ async def _serve_connection(
     connection: ActiveConnection,
     manager: PresenceManager,
 ) -> None:
+    received = 0
     while True:
+        if received >= MAX_SOCKET_MESSAGES:
+            manager.metrics.increment("socket_message_budget_exhausted")
+            await _close(websocket, WEBSOCKET_CLOSE_POLICY)
+            return
+        received += 1
         try:
             raw_message = await asyncio.wait_for(
                 websocket.receive_text(),
@@ -827,7 +1119,11 @@ async def websocket_presence(websocket: WebSocket) -> None:
         connected_at=now,
         last_heartbeat_at=now,
     )
-    previous = await manager.register(connection)
+    try:
+        previous = await manager.register(connection)
+    except ConnectionLimitError:
+        await _close(websocket, WEBSOCKET_CLOSE_TRY_AGAIN)
+        return
     if previous is not None:
         await _close(previous.websocket, WEBSOCKET_CLOSE_REPLACED)
     await manager.broadcast_presence(session.user_id)
@@ -840,6 +1136,7 @@ async def websocket_presence(websocket: WebSocket) -> None:
 
 __all__ = [
     "ActiveConnection",
+    "ConnectionLimitError",
     "ConnectionManager",
     "HEARTBEAT_MESSAGE_TYPE",
     "MAX_ICE_CANDIDATE_BYTES",
@@ -850,6 +1147,14 @@ __all__ = [
     "MAX_SIGNALING_HANDSHAKE_BYTES",
     "MAX_SIGNALING_MESSAGES",
     "MAX_SIGNALING_SDP_BYTES",
+    "MAX_SOCKET_QUEUE_MESSAGES",
+    "MAX_CONNECTIONS_PER_ACCOUNT",
+    "MAX_CONNECTIONS_PER_DEVICE",
+    "MAX_SIGNALING_MESSAGES_PER_ACCOUNT",
+    "MAX_SOCKET_MESSAGES",
+    "MAX_TOTAL_CONNECTIONS",
+    "MAX_WEBSOCKET_QUEUE_BYTES",
+    "MAX_WEBSOCKET_QUEUE_MESSAGES",
     "MAX_WEBSOCKET_MESSAGE_BYTES",
     "MAX_SDP_BYTES",
     "PING_MESSAGE_TYPE",
@@ -868,6 +1173,9 @@ __all__ = [
     "WebSocketTicketIssuer",
     "WebSocketTicketService",
     "WEBSOCKET_TICKET_LIFETIME",
+    "WEBSOCKET_CLOSE_TRY_AGAIN",
+    "SIGNALING_SINGLE_USE_MESSAGE_TYPES",
+    "WEBSOCKET_SEND_TIMEOUT_SECONDS",
     "issue_websocket_ticket",
     "list_online_devices",
     "public_ticket",
