@@ -175,13 +175,17 @@ function NewBrowserPairing() {
     }, [state]);
 
     useEffect(() => {
-        if (!request || !identity || state !== 'pending') {
+        if (!request || !identity) {
             return undefined;
         }
         let cancelled = false;
         let completionStarted = false;
+        let finished = false;
 
         const poll = async () => {
+            if (cancelled || finished) {
+                return;
+            }
             try {
                 const next = await getPairingRequestStatus(request.request_id);
                 if (cancelled) {
@@ -189,10 +193,12 @@ function NewBrowserPairing() {
                 }
                 setPollNotice(null);
                 if (next.status === 'rejected') {
+                    finished = true;
                     setState('rejected');
                     return;
                 }
                 if (next.status === 'expired') {
+                    finished = true;
                     setState('expired');
                     return;
                 }
@@ -211,10 +217,12 @@ function NewBrowserPairing() {
                     if (cancelled) {
                         return;
                     }
+                    finished = true;
                     setCompletedDevice(result.device);
                     setState('complete');
                 } catch (completionError) {
                     if (!cancelled) {
+                        finished = true;
                         setError(
                             errorMessage(completionError, 'The pairing could not be completed.'),
                         );
@@ -234,7 +242,7 @@ function NewBrowserPairing() {
             cancelled = true;
             window.clearInterval(timer);
         };
-    }, [identity, request, state]);
+    }, [identity, request]);
 
     const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
