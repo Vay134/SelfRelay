@@ -15,6 +15,7 @@ from app.auth import (
     RepositoryAccountStore,
     router,
 )
+from app.availability import router as availability_router
 from app.config import load_settings
 from app.database import BackendUnavailableError, Database
 from app.device_auth import DeviceAuthService
@@ -242,6 +243,7 @@ for _provider_error in (
     app.add_exception_handler(_provider_error, _backend_unavailable)
 
 app.include_router(router)
+app.include_router(availability_router)
 app.include_router(session_router)
 app.include_router(device_router)
 app.include_router(pairing_router)
