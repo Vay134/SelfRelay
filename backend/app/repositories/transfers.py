@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import secrets
 import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from .base import RepositoryDatabase, as_row, first_row, required_row
 from .models import TransferRequestRecord, transfer_request_from_row
@@ -525,7 +524,7 @@ class InMemoryTransferRequestRepository:
                 raise ValueError("transfer devices are unavailable")
         created_at = self._now()
         record = TransferRequestRecord(
-            id=UUID(bytes=secrets.token_bytes(16)),
+            id=uuid4(),
             user_id=account_id,
             sender_device_id=sender_device_id,
             recipient_device_id=recipient_device_id,
