@@ -21,11 +21,12 @@ from app.adapters import FakeAuthGateway
 from app.config import load_settings
 from app.device_crypto import signed_message
 from app.presence import (
+    MAX_WEBSOCKET_MESSAGE_BYTES,
+    WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE,
     ActiveConnection,
     DeviceRepositoryPort,
-    MAX_WEBSOCKET_MESSAGE_BYTES,
     PresenceManager,
-    WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE,
+    WebSocketTicketService,
 )
 from app.repositories.models import DeviceRecord
 from app.repositories.websocket_tickets import InMemoryWebSocketTicketRepository
@@ -119,6 +120,64 @@ def _register(
     )
     assert completed.status_code == 200
     return cast(dict[str, object], completed.json())
+
+
+def _prepare_second_browser(
+    client: TestClient,
+    registered: dict[str, object],
+) -> tuple[str, str, UUID, UUID]:
+    account_id = UUID(cast(str, registered["account_id"]))
+    first_device = cast(dict[str, object], registered["device"])
+    first_session = cast(dict[str, object], registered["session"])
+    first_device_id = UUID(cast(str, first_device["device_id"]))
+    first_session_id = UUID(cast(str, first_session["session_id"]))
+
+    async def prepare() -> tuple[str, str, UUID, UUID]:
+        session_repository = main.app.state.session_repository
+        session = await session_repository.find_current_by_id(first_session_id)
+        assert session is not None
+        second_device = await main.app.state.device_repository.create(
+            account_id,
+            session.epoch,
+            "Phone",
+            b"second-browser-spki",
+            b"s" * 32,
+        )
+        second_session = await main.app.state.session_service.create(
+            account_id,
+            second_device.id,
+            session.epoch,
+        )
+        ticket_service = cast(WebSocketTicketService, main.app.state.websocket_ticket_service)
+        first_ticket, _ = await ticket_service.issue(session)
+        second_ticket, _ = await ticket_service.issue(second_session.record)
+        transfer = await main.app.state.transfer_service.create_offer(
+            account_id,
+            first_device_id,
+            second_device.id,
+        )
+        accepted = await main.app.state.transfer_service.accept(
+            account_id,
+            transfer.id,
+            second_device.id,
+        )
+        assert accepted.status == "accepted"
+        return first_ticket, second_ticket, second_device.id, transfer.id
+
+    assert client.portal is not None
+    return client.portal.call(prepare)
+
+
+def _issue_fresh_ticket(client: TestClient, session_id: UUID) -> str:
+    async def issue() -> str:
+        session = await main.app.state.session_repository.find_current_by_id(session_id)
+        assert session is not None
+        ticket_service = cast(WebSocketTicketService, main.app.state.websocket_ticket_service)
+        ticket, _ = await ticket_service.issue(session)
+        return ticket
+
+    assert client.portal is not None
+    return client.portal.call(issue)
 
 
 def test_in_memory_ticket_is_single_use_and_session_bound() -> None:
@@ -304,3 +363,83 @@ def test_websocket_closes_oversized_messages_with_bounded_payload_code(
             websocket.receive_text()
 
     assert disconnect.value.code == WEBSOCKET_CLOSE_MESSAGE_TOO_LARGE
+
+
+def test_two_browser_sessions_signal_and_reconnect_after_backend_restart(
+    client: TestClient,
+) -> None:
+    registered = _register(client, "presence-integration@example.test")
+    first_session = cast(dict[str, object], registered["session"])
+    first_session_id = UUID(cast(str, first_session["session_id"]))
+    first_device = cast(dict[str, object], registered["device"])
+    first_device_id = UUID(cast(str, first_device["device_id"]))
+    first_ticket, second_ticket, second_device_id, transfer_id = _prepare_second_browser(
+        client,
+        registered,
+    )
+
+    with client.websocket_connect(
+        f"/auth/ws?ticket={first_ticket}",
+        headers={"Origin": APP_ORIGIN},
+    ) as first_browser:
+        initial = first_browser.receive_json()
+        assert initial["devices"] == [{"device_id": str(first_device_id), "label": "Laptop"}]
+
+        with client.websocket_connect(
+            f"/auth/ws?ticket={second_ticket}",
+            headers={"Origin": APP_ORIGIN},
+        ) as second_browser:
+            expected_devices = [
+                {"device_id": str(device_id), "label": label}
+                for device_id, label in sorted(
+                    ((first_device_id, "Laptop"), (second_device_id, "Phone")),
+                    key=lambda item: str(item[0]),
+                )
+            ]
+            assert second_browser.receive_json() == {
+                "type": "presence",
+                "devices": expected_devices,
+            }
+            assert first_browser.receive_json() == {
+                "type": "presence",
+                "devices": expected_devices,
+            }
+
+            expires_at = int((datetime.now(UTC) + timedelta(minutes=1)).timestamp() * 1000)
+            offer = {
+                "type": "sdp_offer",
+                "v": 1,
+                "transfer_id": str(transfer_id),
+                "sender_device_id": str(first_device_id),
+                "recipient_device_id": str(second_device_id),
+                "expires_at": expires_at,
+                "sdp": "v=0",
+            }
+            first_browser.send_json(offer)
+            assert second_browser.receive_json() == offer
+
+            answer = {**offer, "type": "sdp_answer", "sdp": "v=0\\r\\na=answer"}
+            second_browser.send_json(answer)
+            assert first_browser.receive_json() == answer
+
+            manager = cast(PresenceManager, main.app.state.presence_manager)
+            assert client.portal is not None
+            client.portal.call(manager.close_all)
+            with pytest.raises(WebSocketDisconnect) as first_disconnect:
+                first_browser.receive_json()
+            with pytest.raises(WebSocketDisconnect) as second_disconnect:
+                second_browser.receive_json()
+            assert first_disconnect.value.code == 1001
+            assert second_disconnect.value.code == 1001
+
+    reconnected_ticket = _issue_fresh_ticket(client, first_session_id)
+    with client.websocket_connect(
+        f"/auth/ws?ticket={reconnected_ticket}",
+        headers={"Origin": APP_ORIGIN},
+    ) as reconnected_browser:
+        assert reconnected_browser.receive_json() == {
+            "type": "presence",
+            "devices": [
+                {"device_id": str(first_device_id), "label": "Laptop"},
+            ],
+        }
