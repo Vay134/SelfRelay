@@ -96,11 +96,11 @@ describe('FileTransferEngine', () => {
     it('confirms, transfers bounded chunks, verifies completion, and returns a receipt', async () => {
         const [senderChannel, recipientChannel] = channelPair();
         const keys = await material();
-        const senderSigning = await crypto.subtle.generateKey(
+        const senderSigning = (await crypto.subtle.generateKey(
             { name: 'ECDSA', namedCurve: 'P-256' },
             false,
             ['sign', 'verify'],
-        ) as CryptoKeyPair;
+        )) as CryptoKeyPair;
         const progress: number[] = [];
         const sender = new FileTransferEngine({
             channel: senderChannel,
@@ -120,7 +120,10 @@ describe('FileTransferEngine', () => {
         });
         senderChannel.open();
         recipientChannel.open();
-        const receiptPromise = sender.sendFile(new Blob(['abcdefghij'], { type: 'text/plain' }), '../../safe.txt');
+        const receiptPromise = sender.sendFile(
+            new Blob(['abcdefghij'], { type: 'text/plain' }),
+            '../../safe.txt',
+        );
         const receipt = await receiptPromise;
         expect(receipt.status).toBe('verified');
         expect(recipient.state).toBe('completed');
@@ -134,11 +137,11 @@ describe('FileTransferEngine', () => {
     it('rejects a file above the 250 MB limit before sending metadata', async () => {
         const [senderChannel] = channelPair();
         const keys = await material();
-        const signing = await crypto.subtle.generateKey(
+        const signing = (await crypto.subtle.generateKey(
             { name: 'ECDSA', namedCurve: 'P-256' },
             false,
             ['sign', 'verify'],
-        ) as CryptoKeyPair;
+        )) as CryptoKeyPair;
         const sender = new FileTransferEngine({
             channel: senderChannel,
             transferId: '22222222-2222-4222-8222-222222222222',
@@ -146,7 +149,10 @@ describe('FileTransferEngine', () => {
             material: keys,
             signingKey: signing.privateKey,
         });
-        const oversized = { size: MAX_TRANSFER_BYTES + 1, slice: () => new Blob() } as unknown as Blob;
+        const oversized = {
+            size: MAX_TRANSFER_BYTES + 1,
+            slice: () => new Blob(),
+        } as unknown as Blob;
         await expect(sender.sendFile(oversized)).rejects.toMatchObject({ code: 'file_too_large' });
         expect(senderChannel.sent).toHaveLength(0);
     });

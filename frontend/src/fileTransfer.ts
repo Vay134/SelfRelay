@@ -169,10 +169,7 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 
 function isReservedWindowsName(value: string): boolean {
     const stem = value.split('.')[0]?.toUpperCase() ?? '';
-    return (
-        /^(?:CON|PRN|AUX|NUL)$/u.test(stem) ||
-        /^(?:COM[1-9]|LPT[1-9])$/u.test(stem)
-    );
+    return /^(?:CON|PRN|AUX|NUL)$/u.test(stem) || /^(?:COM[1-9]|LPT[1-9])$/u.test(stem);
 }
 
 /** Strip path components and characters unsafe for a browser download name. */
@@ -181,7 +178,7 @@ export function sanitizeFileName(value: unknown): string {
     const pieces = source.split(/[\\/]/u).filter((piece) => piece.length > 0);
     let result = pieces[pieces.length - 1] ?? '';
     result = result
-        .replace(/[\u0000-\u001f\u007f-\u009f]/gu, '')
+        .replace(/\p{Cc}/gu, '')
         .replace(/[<>:"/\\|?*]/gu, '_')
         .trim()
         .replace(/[. ]+$/gu, '');
@@ -221,7 +218,10 @@ function requireExactKeys(value: Record<string, unknown>, keys: readonly string[
     const expected = new Set(keys);
     for (const key of Object.keys(value)) {
         if (!expected.has(key)) {
-            throw new ProtocolError('Transfer payload contains an unknown field.', 'invalid_payload');
+            throw new ProtocolError(
+                'Transfer payload contains an unknown field.',
+                'invalid_payload',
+            );
         }
     }
     for (const key of keys) {
@@ -241,10 +241,16 @@ function record(value: unknown, code = 'invalid_payload'): Record<string, unknow
 function parseManifest(value: ByteInput): TransferManifest {
     const object = record(parseCanonicalJson(value), 'invalid_manifest');
     requireExactKeys(object, ['file_name', 'media_type', 'byte_count', 'chunk_size']);
-    if (typeof object.file_name !== 'string' || utf8ByteLength(object.file_name) > MAX_FILE_NAME_BYTES) {
+    if (
+        typeof object.file_name !== 'string' ||
+        utf8ByteLength(object.file_name) > MAX_FILE_NAME_BYTES
+    ) {
         throw new ProtocolError('Manifest file name is invalid.', 'invalid_manifest');
     }
-    if (typeof object.media_type !== 'string' || utf8ByteLength(object.media_type) > MAX_MEDIA_TYPE_BYTES) {
+    if (
+        typeof object.media_type !== 'string' ||
+        utf8ByteLength(object.media_type) > MAX_MEDIA_TYPE_BYTES
+    ) {
         throw new ProtocolError('Manifest media type is invalid.', 'invalid_manifest');
     }
     if (!/^[\x20-\x7e]*$/u.test(object.media_type)) {
@@ -281,7 +287,10 @@ function parseComplete(value: ByteInput): { core: FileComplete; signature: Uint8
         'transcript_hash',
     ]);
     if (coreObject.v !== 1 || coreObject.type !== 'file_complete') {
-        throw new ProtocolError('Completion record version or type is invalid.', 'invalid_complete');
+        throw new ProtocolError(
+            'Completion record version or type is invalid.',
+            'invalid_complete',
+        );
     }
     if (typeof coreObject.transfer_id !== 'string') {
         throw new ProtocolError('Completion transfer identifier is invalid.', 'invalid_complete');
@@ -342,27 +351,18 @@ function parseReceipt(value: ByteInput): TransferReceipt {
 }
 
 const SHA256_INITIAL = [
-    0x6a09e667,
-    0xbb67ae85,
-    0x3c6ef372,
-    0xa54ff53a,
-    0x510e527f,
-    0x9b05688c,
-    0x1f83d9ab,
-    0x5be0cd19,
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ] as const;
 
 const SHA256_K = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-    0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-    0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-    0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-    0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-    0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-    0xc67178f2,
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ] as const;
 
 function rotateRight(value: number, amount: number): number {
@@ -415,7 +415,8 @@ export class IncrementalSha256 {
             return copyBytes(this.finalDigest);
         }
         const bitLength = BigInt(this.totalBytes) * 8n;
-        const paddingLength = this.bufferLength < 56 ? 56 - this.bufferLength : 120 - this.bufferLength;
+        const paddingLength =
+            this.bufferLength < 56 ? 56 - this.bufferLength : 120 - this.bufferLength;
         const padding = new Uint8Array(paddingLength + 8);
         padding[0] = 0x80;
         new DataView(padding.buffer).setBigUint64(paddingLength, bitLength, false);
@@ -437,8 +438,14 @@ export class IncrementalSha256 {
             words[index] = view.getUint32(index * 4, false);
         }
         for (let index = 16; index < 64; index += 1) {
-            const s0 = rotateRight(words[index - 15], 7) ^ rotateRight(words[index - 15], 18) ^ (words[index - 15] >>> 3);
-            const s1 = rotateRight(words[index - 2], 17) ^ rotateRight(words[index - 2], 19) ^ (words[index - 2] >>> 10);
+            const s0 =
+                rotateRight(words[index - 15], 7) ^
+                rotateRight(words[index - 15], 18) ^
+                (words[index - 15] >>> 3);
+            const s1 =
+                rotateRight(words[index - 2], 17) ^
+                rotateRight(words[index - 2], 19) ^
+                (words[index - 2] >>> 10);
             words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
         }
         let [a, b, c, d, e, f, g, h] = this.state;
@@ -472,7 +479,13 @@ export class IncrementalSha256 {
 export const IncrementalSHA256 = IncrementalSha256;
 
 function validateWatermarks(high: number, low: number): void {
-    if (!Number.isSafeInteger(high) || high <= 0 || !Number.isSafeInteger(low) || low < 0 || low >= high) {
+    if (
+        !Number.isSafeInteger(high) ||
+        high <= 0 ||
+        !Number.isSafeInteger(low) ||
+        low < 0 ||
+        low >= high
+    ) {
         throw new ProtocolError('Data-channel watermarks are invalid.', 'invalid_backpressure');
     }
 }
@@ -581,20 +594,29 @@ function channelBytes(data: unknown): Promise<Uint8Array> {
     return Promise.reject(new ProtocolError('Data-channel payload is invalid.', 'invalid_frame'));
 }
 
-function resolveMaterial(material: TransferMaterial, role: TransferRole): {
+function resolveMaterial(
+    material: TransferMaterial,
+    role: TransferRole,
+): {
     sendKey: CryptoKey;
     receiveKey: CryptoKey;
     sendNoncePrefix: Uint8Array;
     receiveNoncePrefix: Uint8Array;
 } {
     const sendKey = material.sendKey ?? (role === 'sender' ? material.s2rKey : material.r2sKey);
-    const receiveKey = material.receiveKey ?? (role === 'sender' ? material.r2sKey : material.s2rKey);
-    const sendNoncePrefix = material.sendNoncePrefix ??
+    const receiveKey =
+        material.receiveKey ?? (role === 'sender' ? material.r2sKey : material.s2rKey);
+    const sendNoncePrefix =
+        material.sendNoncePrefix ??
         (role === 'sender' ? material.s2rNoncePrefix : material.r2sNoncePrefix);
-    const receiveNoncePrefix = material.receiveNoncePrefix ??
+    const receiveNoncePrefix =
+        material.receiveNoncePrefix ??
         (role === 'sender' ? material.r2sNoncePrefix : material.s2rNoncePrefix);
     if (!sendKey || !receiveKey || !sendNoncePrefix || !receiveNoncePrefix) {
-        throw new ProtocolError('Directional handshake material is incomplete.', 'invalid_material');
+        throw new ProtocolError(
+            'Directional handshake material is incomplete.',
+            'invalid_material',
+        );
     }
     return {
         sendKey,
@@ -605,7 +627,8 @@ function resolveMaterial(material: TransferMaterial, role: TransferRole): {
 }
 
 function asFileName(file: Blob, fallback?: string): string {
-    const candidate = fallback ?? ('name' in file ? (file as Blob & { name?: unknown }).name : undefined);
+    const candidate =
+        fallback ?? ('name' in file ? (file as Blob & { name?: unknown }).name : undefined);
     return sanitizeFileName(candidate);
 }
 
@@ -664,8 +687,14 @@ export class FileTransferEngine {
         this.role = options.role;
         this.material = options.material;
         this.keys = resolveMaterial(options.material, options.role);
-        if (copyBytes(options.material.confirmation).byteLength !== 32 || copyBytes(options.material.transcriptHash).byteLength !== 32) {
-            throw new ProtocolError('Handshake confirmation material is invalid.', 'invalid_material');
+        if (
+            copyBytes(options.material.confirmation).byteLength !== 32 ||
+            copyBytes(options.material.transcriptHash).byteLength !== 32
+        ) {
+            throw new ProtocolError(
+                'Handshake confirmation material is invalid.',
+                'invalid_material',
+            );
         }
         this.signingKey = options.signingKey;
         this.senderSigningPublicKey = options.senderSigningPublicKey ?? options.senderPublicKey;
@@ -675,14 +704,23 @@ export class FileTransferEngine {
         if (this.role === 'recipient' && !this.senderSigningPublicKey) {
             throw new ProtocolError('A sender verification key is required.', 'invalid_material');
         }
-        const negotiatedMaximum = options.maxMessageSize === undefined
-            ? MAX_CHUNK_SIZE
-            : options.maxMessageSize - 31 - 16;
+        const negotiatedMaximum =
+            options.maxMessageSize === undefined
+                ? MAX_CHUNK_SIZE
+                : options.maxMessageSize - 31 - 16;
         if (!Number.isSafeInteger(negotiatedMaximum) || negotiatedMaximum < 1) {
-            throw new ProtocolError('The negotiated message size is invalid.', 'invalid_chunk_size');
+            throw new ProtocolError(
+                'The negotiated message size is invalid.',
+                'invalid_chunk_size',
+            );
         }
         const chunkSize = options.chunkSize ?? Math.min(DEFAULT_CHUNK_SIZE, negotiatedMaximum);
-        if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > MAX_CHUNK_SIZE || chunkSize > negotiatedMaximum) {
+        if (
+            !Number.isSafeInteger(chunkSize) ||
+            chunkSize < 1 ||
+            chunkSize > MAX_CHUNK_SIZE ||
+            chunkSize > negotiatedMaximum
+        ) {
             throw new ProtocolError('The chunk size is invalid.', 'invalid_chunk_size');
         }
         this.chunkSize = chunkSize;
@@ -766,7 +804,10 @@ export class FileTransferEngine {
 
     accept(): void {
         if (this.role !== 'recipient' || this.manifest) {
-            throw new ProtocolError('The transfer cannot be accepted in its current state.', 'invalid_state');
+            throw new ProtocolError(
+                'The transfer cannot be accepted in its current state.',
+                'invalid_state',
+            );
         }
         this.accepted = true;
     }
@@ -780,13 +821,23 @@ export class FileTransferEngine {
             throw new ProtocolError('Only the sender can send a file.', 'invalid_state');
         }
         if (this.isTerminal() || this.completionSent) {
-            throw this.terminalError ?? new ProtocolError('The transfer is not available.', 'invalid_state');
+            throw (
+                this.terminalError ??
+                new ProtocolError('The transfer is not available.', 'invalid_state')
+            );
         }
-        const input = file as Blob & { size: number; slice: (start?: number, end?: number) => Blob };
+        const input = file as Blob & {
+            size: number;
+            slice: (start?: number, end?: number) => Blob;
+        };
         if (!input || typeof input.size !== 'number' || typeof input.slice !== 'function') {
             throw new ProtocolError('The selected file is invalid.', 'invalid_file');
         }
-        if (!Number.isSafeInteger(input.size) || input.size < 0 || input.size > MAX_TRANSFER_BYTES) {
+        if (
+            !Number.isSafeInteger(input.size) ||
+            input.size < 0 ||
+            input.size > MAX_TRANSFER_BYTES
+        ) {
             throw new ProtocolError('The selected file is too large.', 'file_too_large');
         }
         if (!this.signingKey) {
@@ -826,7 +877,9 @@ export class FileTransferEngine {
             sha256: encodeBase64Url(digest.digest()),
             transcript_hash: encodeBase64Url(this.material.transcriptHash),
         };
-        const signature = encodeBase64Url(await signP256(this.signingKey, canonicalJsonBytes(core)));
+        const signature = encodeBase64Url(
+            await signP256(this.signingKey, canonicalJsonBytes(core)),
+        );
         this.receiptPromise = new Promise<TransferReceipt>((resolve, reject) => {
             this.receiptResolve = resolve;
             this.receiptReject = reject;
@@ -948,7 +1001,10 @@ export class FileTransferEngine {
         confirmation = false,
     ): Promise<void> {
         if (this.isTerminal()) {
-            throw this.terminalError ?? new ProtocolError('The transfer is not available.', 'invalid_state');
+            throw (
+                this.terminalError ??
+                new ProtocolError('The transfer is not available.', 'invalid_state')
+            );
         }
         if (this.channel.readyState !== 'open') {
             throw new ProtocolError('The data channel is not open.', 'channel_not_open');
@@ -991,7 +1047,12 @@ export class FileTransferEngine {
         }
         const chunk = copyBytes(value);
         const remaining = this.manifest.byte_count - this.receivedBytes;
-        if (remaining <= 0 || chunk.byteLength === 0 || chunk.byteLength > this.manifest.chunk_size || chunk.byteLength > remaining) {
+        if (
+            remaining <= 0 ||
+            chunk.byteLength === 0 ||
+            chunk.byteLength > this.manifest.chunk_size ||
+            chunk.byteLength > remaining
+        ) {
             throw new ProtocolError('Chunk size is invalid.', 'invalid_chunk');
         }
         const isFinalChunk = chunk.byteLength === remaining;
@@ -1010,8 +1071,16 @@ export class FileTransferEngine {
             throw new ProtocolError('Completion arrived before the manifest.', 'invalid_state');
         }
         const { core, signature } = parseComplete(value);
-        if (core.transfer_id !== this.transferId || core.byte_count !== this.manifest.byte_count || core.chunk_count !== this.receivedChunks || this.receivedBytes !== this.manifest.byte_count) {
-            throw new ProtocolError('Completion counts do not match the received file.', 'digest_mismatch');
+        if (
+            core.transfer_id !== this.transferId ||
+            core.byte_count !== this.manifest.byte_count ||
+            core.chunk_count !== this.receivedChunks ||
+            this.receivedBytes !== this.manifest.byte_count
+        ) {
+            throw new ProtocolError(
+                'Completion counts do not match the received file.',
+                'digest_mismatch',
+            );
         }
         if (!sameBytes(decodeBase64Url(core.transcript_hash, 32), this.material.transcriptHash)) {
             throw new ProtocolError('Completion transcript does not match.', 'transcript_mismatch');
@@ -1020,15 +1089,17 @@ export class FileTransferEngine {
         if (!sameBytes(digest, decodeBase64Url(core.sha256, 32))) {
             throw new ProtocolError('The received file digest does not match.', 'digest_mismatch');
         }
-        const publicKey = this.senderSigningPublicKey instanceof CryptoKey
-            ? this.senderSigningPublicKey
-            : await importP256Spki(this.senderSigningPublicKey as ByteInput, 'signing');
+        const publicKey =
+            this.senderSigningPublicKey instanceof CryptoKey
+                ? this.senderSigningPublicKey
+                : await importP256Spki(this.senderSigningPublicKey as ByteInput, 'signing');
         if (!(await verifyP256(publicKey, canonicalJsonBytes(core), signature))) {
             throw new ProtocolError('Completion signature is invalid.', 'invalid_signature');
         }
         const blobParts = this.receiverChunks.map((chunk) => chunk.slice().buffer as ArrayBuffer);
         const blob = new Blob(blobParts, { type: this.manifest.media_type });
-        const downloadUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(blob) : undefined;
+        const downloadUrl =
+            typeof URL.createObjectURL === 'function' ? URL.createObjectURL(blob) : undefined;
         const received: ReceivedFile = {
             blob,
             fileName: this.manifest.file_name,
@@ -1058,7 +1129,10 @@ export class FileTransferEngine {
         }
         const receipt = parseReceipt(value);
         if (receipt.transfer_id !== this.transferId) {
-            throw new ProtocolError('Receipt transfer identifier does not match.', 'identity_mismatch');
+            throw new ProtocolError(
+                'Receipt transfer identifier does not match.',
+                'identity_mismatch',
+            );
         }
         this.receiptResolve?.(receipt);
         this.receiptResolve = undefined;
@@ -1070,14 +1144,28 @@ export class FileTransferEngine {
     private handleTerminalPayload(value: ByteInput, type: 'cancel' | 'error'): void {
         const object = record(parseCanonicalJson(value), `remote_${type}`);
         requireExactKeys(object, ['v', 'type', 'code']);
-        if (object.v !== 1 || object.type !== type || typeof object.code !== 'string' || !/^[a-z0-9_]{1,64}$/u.test(object.code)) {
+        if (
+            object.v !== 1 ||
+            object.type !== type ||
+            typeof object.code !== 'string' ||
+            !/^[a-z0-9_]{1,64}$/u.test(object.code)
+        ) {
             throw new ProtocolError('Remote terminal payload is invalid.', 'invalid_payload');
         }
-        const error = new ProtocolError(type === 'cancel' ? 'The peer cancelled the transfer.' : 'The peer reported a transfer error.', object.code);
+        const error = new ProtocolError(
+            type === 'cancel'
+                ? 'The peer cancelled the transfer.'
+                : 'The peer reported a transfer error.',
+            object.code,
+        );
         this.fail(error, false, false);
     }
 
-    private async sendTerminalFrame(type: 'cancel' | 'error', code: string, state: 'cancelled' | 'failed'): Promise<void> {
+    private async sendTerminalFrame(
+        type: 'cancel' | 'error',
+        code: string,
+        state: 'cancelled' | 'failed',
+    ): Promise<void> {
         if (this.isTerminal()) {
             return;
         }
@@ -1154,7 +1242,12 @@ export class FileTransferEngine {
     }
 
     private isTerminal(): boolean {
-        return this.stateValue === 'completed' || this.stateValue === 'cancelled' || this.stateValue === 'failed' || this.stateValue === 'closed';
+        return (
+            this.stateValue === 'completed' ||
+            this.stateValue === 'cancelled' ||
+            this.stateValue === 'failed' ||
+            this.stateValue === 'closed'
+        );
     }
 
     private setState(state: FileTransferState): void {

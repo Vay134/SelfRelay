@@ -168,15 +168,24 @@ export class WebRtcTestSession {
             return true;
         }
         if (message.type === 'handshake_offer') {
-            if (this.role !== 'recipient' || !this.signingKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
+            if (
+                this.role !== 'recipient' ||
+                !this.signingKey ||
+                !this.peerSigningPublicKey ||
+                this.accountEpoch === undefined
+            ) {
                 return false;
             }
-            const offer = await assertValidHandshakeOffer(message.handshake, this.peerSigningPublicKey, {
-                transferId: this.transfer.transfer_id,
-                accountEpoch: this.accountEpoch,
-                senderDeviceId: this.transfer.sender_device_id,
-                recipientDeviceId: this.transfer.recipient_device_id,
-            });
+            const offer = await assertValidHandshakeOffer(
+                message.handshake,
+                this.peerSigningPublicKey,
+                {
+                    transferId: this.transfer.transfer_id,
+                    accountEpoch: this.accountEpoch,
+                    senderDeviceId: this.transfer.sender_device_id,
+                    recipientDeviceId: this.transfer.recipient_device_id,
+                },
+            );
             const answer = await createHandshakeAnswer({
                 transferId: this.transfer.transfer_id,
                 accountEpoch: this.accountEpoch,
@@ -198,16 +207,26 @@ export class WebRtcTestSession {
             return true;
         }
         if (message.type === 'handshake_answer') {
-            if (this.role !== 'sender' || !this.handshakeOffer || !this.handshakeEphemeralPrivateKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
+            if (
+                this.role !== 'sender' ||
+                !this.handshakeOffer ||
+                !this.handshakeEphemeralPrivateKey ||
+                !this.peerSigningPublicKey ||
+                this.accountEpoch === undefined
+            ) {
                 return false;
             }
-            const answer = await assertValidHandshakeAnswer(message.handshake, this.peerSigningPublicKey, {
-                offer: this.handshakeOffer,
-                transferId: this.transfer.transfer_id,
-                accountEpoch: this.accountEpoch,
-                senderDeviceId: this.transfer.sender_device_id,
-                recipientDeviceId: this.transfer.recipient_device_id,
-            });
+            const answer = await assertValidHandshakeAnswer(
+                message.handshake,
+                this.peerSigningPublicKey,
+                {
+                    offer: this.handshakeOffer,
+                    transferId: this.transfer.transfer_id,
+                    accountEpoch: this.accountEpoch,
+                    senderDeviceId: this.transfer.sender_device_id,
+                    recipientDeviceId: this.transfer.recipient_device_id,
+                },
+            );
             this.materialValue = await deriveHandshakeMaterial({
                 offer: this.handshakeOffer.core,
                 answer,
