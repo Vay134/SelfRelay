@@ -16,6 +16,11 @@ backend/.mypy_cache/
 backend/.ruff_cache/
 backend/.env
 
+# Cloudflare Worker local state and secrets
+ops/availability-probe/.dev.vars
+ops/availability-probe/.dev.vars.*
+ops/availability-probe/.wrangler/
+
 # Local tooling output
 .DS_Store
 *.log

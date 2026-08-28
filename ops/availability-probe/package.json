@@ -1,0 +1,20 @@
+{
+    "name": "e2e-secure-file-transfer-availability-probe",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "dev": "wrangler dev --test-scheduled",
+        "deploy": "wrangler deploy",
+        "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+        "test": "vitest run",
+        "typecheck": "tsc --noEmit"
+    },
+    "devDependencies": {
+        "@cloudflare/workers-types": "4.20250823.0",
+        "prettier": "3.6.2",
+        "typescript": "5.9.2",
+        "vitest": "3.2.4",
+        "wrangler": "4.33.1"
+    }
+}
