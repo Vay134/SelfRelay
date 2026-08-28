@@ -611,3 +611,657 @@ export async function sha256(value: ByteInput): Promise<Uint8Array> {
         throw new ProtocolError('Unable to calculate SHA-256.', 'crypto_failure');
     }
 }
+
+export type HandshakeOfferCore = {
+    v: typeof TRANSFER_PROTOCOL_VERSION;
+    type: 'handshake_offer';
+    transfer_id: string;
+    account_epoch: number;
+    sender_device_id: string;
+    recipient_device_id: string;
+    sender_ephemeral_spki: string;
+    sender_nonce: string;
+    issued_at: number;
+    expires_at: number;
+};
+
+export type HandshakeAnswerCore = {
+    v: typeof TRANSFER_PROTOCOL_VERSION;
+    type: 'handshake_answer';
+    transfer_id: string;
+    account_epoch: number;
+    sender_device_id: string;
+    recipient_device_id: string;
+    offer_hash: string;
+    recipient_ephemeral_spki: string;
+    recipient_nonce: string;
+    issued_at: number;
+    expires_at: number;
+};
+
+export type SignedHandshakeOffer = {
+    core: HandshakeOfferCore;
+    signature: string;
+};
+
+export type SignedHandshakeAnswer = {
+    core: HandshakeAnswerCore;
+    signature: string;
+};
+
+type SignedMessageOptions = {
+    transferId: string;
+    accountEpoch: number;
+    senderDeviceId: string;
+    recipientDeviceId: string;
+    issuedAt?: number;
+    expiresAt: number;
+    nonce?: ByteInput;
+    signingKey: CryptoKey;
+    ephemeralKeyPair?: CryptoKeyPair;
+};
+
+export type HandshakeOfferOptions = SignedMessageOptions;
+
+export type HandshakeAnswerOptions = Omit<SignedMessageOptions, 'nonce'> & {
+    offer: SignedHandshakeOffer | HandshakeOfferCore;
+    nonce?: ByteInput;
+};
+
+export type HandshakeExpectations = {
+    transferId?: string;
+    accountEpoch?: number;
+    senderDeviceId?: string;
+    recipientDeviceId?: string;
+    now?: number;
+};
+
+export type HandshakeAnswerExpectations = HandshakeExpectations & {
+    offer: SignedHandshakeOffer | HandshakeOfferCore;
+};
+
+export type HandshakeOfferResult = SignedHandshakeOffer & {
+    ephemeralKeyPair: CryptoKeyPair;
+};
+
+export type HandshakeAnswerResult = SignedHandshakeAnswer & {
+    ephemeralKeyPair: CryptoKeyPair;
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
+function requireSafeInteger(value: unknown, name: string, minimum = 0): number {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+        throw new ProtocolError(`${name} must be a safe integer.`, 'invalid_handshake');
+    }
+    return value;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+function requireUuid(value: unknown, name: string): string {
+    if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
+        throw new ProtocolError(`${name} must be a lowercase UUID.`, 'invalid_handshake');
+    }
+    return value;
+}
+
+function requireFixedBase64(value: unknown, name: string, length: number): string {
+    if (typeof value !== 'string') {
+        throw new ProtocolError(`${name} must be base64url.`, 'invalid_handshake');
+    }
+    const bytes = decodeBase64Url(value, Math.max(length, 1024));
+    if (bytes.byteLength !== length) {
+        throw new ProtocolError(`${name} has an invalid length.`, 'invalid_handshake');
+    }
+    return value;
+}
+
+function requireSpkiBase64(value: unknown, name: string): string {
+    if (typeof value !== 'string') {
+        throw new ProtocolError(`${name} must be base64url.`, 'invalid_handshake');
+    }
+    const bytes = decodeBase64Url(value, 1024);
+    if (bytes.byteLength < 1 || bytes.byteLength > 1024) {
+        throw new ProtocolError(`${name} has an invalid length.`, 'invalid_handshake');
+    }
+    return value;
+}
+
+function requireExactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
+    const expected = new Set(keys);
+    for (const key of Object.keys(value)) {
+        if (!expected.has(key)) {
+            throw new ProtocolError(
+                `Signed message contains an unknown field: ${key}.`,
+                'extra_field',
+            );
+        }
+    }
+    for (const key of keys) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+            throw new ProtocolError(`Signed message is missing field: ${key}.`, 'missing_field');
+        }
+    }
+}
+
+const OFFER_KEYS = [
+    'v',
+    'type',
+    'transfer_id',
+    'account_epoch',
+    'sender_device_id',
+    'recipient_device_id',
+    'sender_ephemeral_spki',
+    'sender_nonce',
+    'issued_at',
+    'expires_at',
+] as const;
+
+const ANSWER_KEYS = [
+    'v',
+    'type',
+    'transfer_id',
+    'account_epoch',
+    'sender_device_id',
+    'recipient_device_id',
+    'offer_hash',
+    'recipient_ephemeral_spki',
+    'recipient_nonce',
+    'issued_at',
+    'expires_at',
+] as const;
+
+function validateExpiry(issuedAt: number, expiresAt: number, now: number): void {
+    if (expiresAt <= issuedAt || expiresAt <= now) {
+        throw new ProtocolError('Handshake message has expired.', 'expired_handshake');
+    }
+}
+
+export function validateHandshakeOfferCore(value: unknown, now = Date.now()): HandshakeOfferCore {
+    if (!isPlainRecord(value)) {
+        throw new ProtocolError('Handshake offer must be an object.', 'invalid_handshake');
+    }
+    requireExactKeys(value, OFFER_KEYS);
+    if (value.v !== TRANSFER_PROTOCOL_VERSION || value.type !== 'handshake_offer') {
+        throw new ProtocolError(
+            'Handshake offer version or type is unsupported.',
+            'unsupported_version',
+        );
+    }
+    const issuedAt = requireSafeInteger(value.issued_at, 'issued_at');
+    const expiresAt = requireSafeInteger(value.expires_at, 'expires_at');
+    validateExpiry(issuedAt, expiresAt, now);
+    return {
+        v: TRANSFER_PROTOCOL_VERSION,
+        type: 'handshake_offer',
+        transfer_id: requireUuid(value.transfer_id, 'transfer_id'),
+        account_epoch: requireSafeInteger(value.account_epoch, 'account_epoch'),
+        sender_device_id: requireUuid(value.sender_device_id, 'sender_device_id'),
+        recipient_device_id: requireUuid(value.recipient_device_id, 'recipient_device_id'),
+        sender_ephemeral_spki: requireSpkiBase64(
+            value.sender_ephemeral_spki,
+            'sender_ephemeral_spki',
+        ),
+        sender_nonce: requireFixedBase64(value.sender_nonce, 'sender_nonce', 32),
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+    };
+}
+
+export function validateHandshakeAnswerCore(value: unknown, now = Date.now()): HandshakeAnswerCore {
+    if (!isPlainRecord(value)) {
+        throw new ProtocolError('Handshake answer must be an object.', 'invalid_handshake');
+    }
+    requireExactKeys(value, ANSWER_KEYS);
+    if (value.v !== TRANSFER_PROTOCOL_VERSION || value.type !== 'handshake_answer') {
+        throw new ProtocolError(
+            'Handshake answer version or type is unsupported.',
+            'unsupported_version',
+        );
+    }
+    const issuedAt = requireSafeInteger(value.issued_at, 'issued_at');
+    const expiresAt = requireSafeInteger(value.expires_at, 'expires_at');
+    validateExpiry(issuedAt, expiresAt, now);
+    return {
+        v: TRANSFER_PROTOCOL_VERSION,
+        type: 'handshake_answer',
+        transfer_id: requireUuid(value.transfer_id, 'transfer_id'),
+        account_epoch: requireSafeInteger(value.account_epoch, 'account_epoch'),
+        sender_device_id: requireUuid(value.sender_device_id, 'sender_device_id'),
+        recipient_device_id: requireUuid(value.recipient_device_id, 'recipient_device_id'),
+        offer_hash: requireFixedBase64(value.offer_hash, 'offer_hash', SHA256_BYTES),
+        recipient_ephemeral_spki: requireSpkiBase64(
+            value.recipient_ephemeral_spki,
+            'recipient_ephemeral_spki',
+        ),
+        recipient_nonce: requireFixedBase64(value.recipient_nonce, 'recipient_nonce', 32),
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+    };
+}
+
+function signedWrapper(value: unknown): { core: unknown; signature: string } {
+    if (!isPlainRecord(value)) {
+        throw new ProtocolError('Signed handshake message must be an object.', 'invalid_handshake');
+    }
+    requireExactKeys(value, ['core', 'signature']);
+    if (typeof value.signature !== 'string') {
+        throw new ProtocolError('Handshake signature must be base64url.', 'invalid_signature');
+    }
+    const signature = decodeBase64Url(value.signature, P256_SIGNATURE_BYTES);
+    if (signature.byteLength !== P256_SIGNATURE_BYTES) {
+        throw new ProtocolError('Handshake signature must be 64-byte P1363.', 'invalid_signature');
+    }
+    return { core: value.core, signature: value.signature };
+}
+
+function offerCoreFrom(value: SignedHandshakeOffer | HandshakeOfferCore): HandshakeOfferCore {
+    if (isPlainRecord(value) && 'core' in value) {
+        return validateHandshakeOfferCore((value as { core: unknown }).core);
+    }
+    return validateHandshakeOfferCore(value);
+}
+
+function assertMessageOptions(options: SignedMessageOptions): {
+    issuedAt: number;
+    expiresAt: number;
+    nonce: Uint8Array;
+} {
+    const issuedAt = options.issuedAt ?? Date.now();
+    const expiresAt = options.expiresAt;
+    requireSafeInteger(issuedAt, 'issued_at');
+    requireSafeInteger(expiresAt, 'expires_at');
+    if (expiresAt <= issuedAt) {
+        throw new ProtocolError('Handshake expiry must be after issue time.', 'invalid_handshake');
+    }
+    const nonce = options.nonce === undefined ? randomBytes(32) : copyBytes(options.nonce);
+    if (nonce.byteLength !== 32) {
+        throw new ProtocolError('Handshake nonce must be 32 bytes.', 'invalid_handshake');
+    }
+    return { issuedAt, expiresAt, nonce };
+}
+
+export async function createHandshakeOffer(
+    options: HandshakeOfferOptions,
+): Promise<HandshakeOfferResult> {
+    const { issuedAt, expiresAt, nonce } = assertMessageOptions(options);
+    const ephemeralKeyPair = options.ephemeralKeyPair ?? (await generateP256AgreementKeyPair());
+    const ephemeralSpki = await exportSpki(ephemeralKeyPair.publicKey);
+    const core: HandshakeOfferCore = {
+        v: TRANSFER_PROTOCOL_VERSION,
+        type: 'handshake_offer',
+        transfer_id: options.transferId,
+        account_epoch: options.accountEpoch,
+        sender_device_id: options.senderDeviceId,
+        recipient_device_id: options.recipientDeviceId,
+        sender_ephemeral_spki: encodeBase64Url(ephemeralSpki),
+        sender_nonce: encodeBase64Url(nonce),
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+    };
+    const validCore = validateHandshakeOfferCore(core, issuedAt);
+    const signature = encodeBase64Url(
+        await signP256(options.signingKey, canonicalJsonBytes(validCore)),
+    );
+    const result = { core: validCore, signature } as HandshakeOfferResult;
+    Object.defineProperty(result, 'ephemeralKeyPair', {
+        value: ephemeralKeyPair,
+        enumerable: false,
+        writable: false,
+    });
+    return result;
+}
+
+export async function createHandshakeAnswer(
+    options: HandshakeAnswerOptions,
+): Promise<HandshakeAnswerResult> {
+    const offer = offerCoreFrom(options.offer);
+    const { issuedAt, expiresAt, nonce } = assertMessageOptions(options);
+    if (
+        offer.transfer_id !== options.transferId ||
+        offer.sender_device_id !== options.senderDeviceId ||
+        offer.recipient_device_id !== options.recipientDeviceId ||
+        offer.account_epoch !== options.accountEpoch
+    ) {
+        throw new ProtocolError(
+            'Handshake answer identities do not match the offer.',
+            'identity_mismatch',
+        );
+    }
+    if (expiresAt > offer.expires_at) {
+        throw new ProtocolError('Handshake answer cannot outlive the offer.', 'invalid_handshake');
+    }
+    const ephemeralKeyPair = options.ephemeralKeyPair ?? (await generateP256AgreementKeyPair());
+    const ephemeralSpki = await exportSpki(ephemeralKeyPair.publicKey);
+    const offerHash = await sha256(canonicalJsonBytes(offer));
+    const core: HandshakeAnswerCore = {
+        v: TRANSFER_PROTOCOL_VERSION,
+        type: 'handshake_answer',
+        transfer_id: offer.transfer_id,
+        account_epoch: offer.account_epoch,
+        sender_device_id: offer.sender_device_id,
+        recipient_device_id: offer.recipient_device_id,
+        offer_hash: encodeBase64Url(offerHash),
+        recipient_ephemeral_spki: encodeBase64Url(ephemeralSpki),
+        recipient_nonce: encodeBase64Url(nonce),
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+    };
+    const validCore = validateHandshakeAnswerCore(core, issuedAt);
+    const signature = encodeBase64Url(
+        await signP256(options.signingKey, canonicalJsonBytes(validCore)),
+    );
+    const result = { core: validCore, signature } as HandshakeAnswerResult;
+    Object.defineProperty(result, 'ephemeralKeyPair', {
+        value: ephemeralKeyPair,
+        enumerable: false,
+        writable: false,
+    });
+    return result;
+}
+
+async function resolveSigningKey(value: CryptoKey | ByteInput): Promise<CryptoKey> {
+    return value instanceof CryptoKey ? value : importP256Spki(value, 'signing');
+}
+
+function assertExpectedIdentity(
+    message: HandshakeOfferCore | HandshakeAnswerCore,
+    expected: HandshakeExpectations,
+): void {
+    if (expected.transferId !== undefined && message.transfer_id !== expected.transferId) {
+        throw new ProtocolError(
+            'Handshake transfer identifier does not match.',
+            'identity_mismatch',
+        );
+    }
+    if (expected.accountEpoch !== undefined && message.account_epoch !== expected.accountEpoch) {
+        throw new ProtocolError('Handshake account epoch does not match.', 'identity_mismatch');
+    }
+    if (
+        expected.senderDeviceId !== undefined &&
+        message.sender_device_id !== expected.senderDeviceId
+    ) {
+        throw new ProtocolError('Handshake sender does not match.', 'identity_mismatch');
+    }
+    if (
+        expected.recipientDeviceId !== undefined &&
+        message.recipient_device_id !== expected.recipientDeviceId
+    ) {
+        throw new ProtocolError('Handshake recipient does not match.', 'identity_mismatch');
+    }
+}
+
+export async function assertValidHandshakeOffer(
+    value: SignedHandshakeOffer,
+    senderPublicKey: CryptoKey | ByteInput,
+    expectations: HandshakeExpectations = {},
+): Promise<HandshakeOfferCore> {
+    const wrapper = signedWrapper(value);
+    const now = expectations.now ?? Date.now();
+    const core = validateHandshakeOfferCore(wrapper.core, now);
+    assertExpectedIdentity(core, expectations);
+    const publicKey = await resolveSigningKey(senderPublicKey);
+    if (
+        !(await verifyP256(
+            publicKey,
+            canonicalJsonBytes(core),
+            decodeBase64Url(wrapper.signature, P256_SIGNATURE_BYTES),
+        ))
+    ) {
+        throw new ProtocolError('Handshake offer signature is invalid.', 'invalid_signature');
+    }
+    await importP256Spki(decodeBase64Url(core.sender_ephemeral_spki, 1024), 'agreement');
+    return core;
+}
+
+export async function verifyHandshakeOffer(
+    value: SignedHandshakeOffer,
+    senderPublicKey: CryptoKey | ByteInput,
+    expectations: HandshakeExpectations = {},
+): Promise<boolean> {
+    try {
+        await assertValidHandshakeOffer(value, senderPublicKey, expectations);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export async function assertValidHandshakeAnswer(
+    value: SignedHandshakeAnswer,
+    recipientPublicKey: CryptoKey | ByteInput,
+    expectations: HandshakeAnswerExpectations,
+): Promise<HandshakeAnswerCore> {
+    const wrapper = signedWrapper(value);
+    const offer = offerCoreFrom(expectations.offer);
+    const now = expectations.now ?? Date.now();
+    const core = validateHandshakeAnswerCore(wrapper.core, now);
+    assertExpectedIdentity(core, expectations);
+    if (
+        core.transfer_id !== offer.transfer_id ||
+        core.account_epoch !== offer.account_epoch ||
+        core.sender_device_id !== offer.sender_device_id ||
+        core.recipient_device_id !== offer.recipient_device_id
+    ) {
+        throw new ProtocolError(
+            'Handshake answer identities do not match the offer.',
+            'identity_mismatch',
+        );
+    }
+    if (core.expires_at > offer.expires_at) {
+        throw new ProtocolError('Handshake answer cannot outlive the offer.', 'invalid_handshake');
+    }
+    const expectedOfferHash = await sha256(canonicalJsonBytes(offer));
+    if (!equalBytes(expectedOfferHash, decodeBase64Url(core.offer_hash, SHA256_BYTES))) {
+        throw new ProtocolError('Handshake answer is bound to another offer.', 'offer_mismatch');
+    }
+    const publicKey = await resolveSigningKey(recipientPublicKey);
+    if (
+        !(await verifyP256(
+            publicKey,
+            canonicalJsonBytes(core),
+            decodeBase64Url(wrapper.signature, P256_SIGNATURE_BYTES),
+        ))
+    ) {
+        throw new ProtocolError('Handshake answer signature is invalid.', 'invalid_signature');
+    }
+    await importP256Spki(decodeBase64Url(core.recipient_ephemeral_spki, 1024), 'agreement');
+    return core;
+}
+
+export async function verifyHandshakeAnswer(
+    value: SignedHandshakeAnswer,
+    recipientPublicKey: CryptoKey | ByteInput,
+    expectations: HandshakeAnswerExpectations,
+): Promise<boolean> {
+    try {
+        await assertValidHandshakeAnswer(value, recipientPublicKey, expectations);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export function serializeSignedHandshakeMessage(
+    message: SignedHandshakeOffer | SignedHandshakeAnswer,
+): Uint8Array {
+    const wrapper = signedWrapper(message);
+    const core =
+        isPlainRecord(wrapper.core) && wrapper.core.type === 'handshake_offer'
+            ? validateHandshakeOfferCore(wrapper.core, Number.MIN_SAFE_INTEGER)
+            : validateHandshakeAnswerCore(wrapper.core, Number.MIN_SAFE_INTEGER);
+    return canonicalJsonBytes({ core, signature: wrapper.signature });
+}
+
+export function transcriptBytes(
+    offer: HandshakeOfferCore,
+    answer: HandshakeAnswerCore,
+): Uint8Array {
+    const offerBytes = canonicalJsonBytes(
+        validateHandshakeOfferCore(offer, Number.MIN_SAFE_INTEGER),
+    );
+    const answerBytes = canonicalJsonBytes(
+        validateHandshakeAnswerCore(answer, Number.MIN_SAFE_INTEGER),
+    );
+    const domainBytes = new TextEncoder().encode(TRANSCRIPT_DOMAIN);
+    const output = new Uint8Array(
+        domainBytes.byteLength + 1 + offerBytes.byteLength + 1 + answerBytes.byteLength,
+    );
+    output.set(domainBytes);
+    output.set(offerBytes, domainBytes.byteLength + 1);
+    output[domainBytes.byteLength] = 0;
+    output[domainBytes.byteLength + 1 + offerBytes.byteLength] = 0;
+    output.set(answerBytes, domainBytes.byteLength + offerBytes.byteLength + 2);
+    return output;
+}
+
+export async function transcriptHash(
+    offer: HandshakeOfferCore,
+    answer: HandshakeAnswerCore,
+): Promise<Uint8Array> {
+    return sha256(transcriptBytes(offer, answer));
+}
+
+export const handshakeTranscriptBytes = transcriptBytes;
+export const handshakeTranscriptHash = transcriptHash;
+
+export type DerivedHandshakeMaterial = {
+    transcriptHash: Uint8Array;
+    s2rKey: CryptoKey;
+    r2sKey: CryptoKey;
+    s2rNoncePrefix: Uint8Array;
+    r2sNoncePrefix: Uint8Array;
+    confirmation: Uint8Array;
+    role?: 'sender' | 'recipient';
+    sendKey?: CryptoKey;
+    receiveKey?: CryptoKey;
+    sendNoncePrefix?: Uint8Array;
+    receiveNoncePrefix?: Uint8Array;
+};
+
+export type DeriveHandshakeMaterialOptions = {
+    offer: HandshakeOfferCore;
+    answer: HandshakeAnswerCore;
+    localEphemeralPrivateKey: CryptoKey;
+    remoteEphemeralSpki: ByteInput;
+    role?: 'sender' | 'recipient';
+};
+
+async function hkdfExpand(
+    ikm: Uint8Array,
+    salt: Uint8Array,
+    labelSuffix: string,
+    length: number,
+): Promise<Uint8Array> {
+    const hkdfKey = await cryptoProvider().subtle.importKey(
+        'raw',
+        asBufferSource(ikm),
+        'HKDF',
+        false,
+        ['deriveBits'],
+    );
+    const info = new TextEncoder().encode(`${KEY_DERIVATION_DOMAIN}${labelSuffix}`);
+    const bits = await cryptoProvider().subtle.deriveBits(
+        { name: 'HKDF', hash: 'SHA-256', salt: asBufferSource(salt), info: asBufferSource(info) },
+        hkdfKey,
+        length * 8,
+    );
+    return copyBytes(bits);
+}
+
+export async function deriveHandshakeMaterial(
+    options: DeriveHandshakeMaterialOptions,
+): Promise<DerivedHandshakeMaterial> {
+    const offer = validateHandshakeOfferCore(options.offer, Number.MIN_SAFE_INTEGER);
+    const answer = validateHandshakeAnswerCore(options.answer, Number.MIN_SAFE_INTEGER);
+    if (
+        offer.transfer_id !== answer.transfer_id ||
+        offer.account_epoch !== answer.account_epoch ||
+        offer.sender_device_id !== answer.sender_device_id ||
+        offer.recipient_device_id !== answer.recipient_device_id
+    ) {
+        throw new ProtocolError(
+            'Handshake transcript identities do not match.',
+            'identity_mismatch',
+        );
+    }
+    const transcript = await transcriptHash(offer, answer);
+    const remotePublicKey = await importP256Spki(options.remoteEphemeralSpki, 'agreement');
+    let sharedSecret: Uint8Array | undefined;
+    try {
+        sharedSecret = copyBytes(
+            await cryptoProvider().subtle.deriveBits(
+                { name: 'ECDH', public: remotePublicKey },
+                options.localEphemeralPrivateKey,
+                256,
+            ),
+        );
+        const [s2rKeyBytes, r2sKeyBytes, s2rNoncePrefix, r2sNoncePrefix, confirmation] =
+            await Promise.all([
+                hkdfExpand(sharedSecret, transcript, 's2r-key', 32),
+                hkdfExpand(sharedSecret, transcript, 'r2s-key', 32),
+                hkdfExpand(sharedSecret, transcript, 's2r-nonce-prefix', 4),
+                hkdfExpand(sharedSecret, transcript, 'r2s-nonce-prefix', 4),
+                hkdfExpand(sharedSecret, transcript, 'confirmation', 32),
+            ]);
+        const [s2rKey, r2sKey] = await Promise.all([
+            cryptoProvider().subtle.importKey(
+                'raw',
+                asBufferSource(s2rKeyBytes),
+                { name: 'AES-GCM' },
+                false,
+                ['encrypt', 'decrypt'],
+            ),
+            cryptoProvider().subtle.importKey(
+                'raw',
+                asBufferSource(r2sKeyBytes),
+                { name: 'AES-GCM' },
+                false,
+                ['encrypt', 'decrypt'],
+            ),
+        ]);
+        const material: DerivedHandshakeMaterial = {
+            transcriptHash: transcript,
+            s2rKey,
+            r2sKey,
+            s2rNoncePrefix,
+            r2sNoncePrefix,
+            confirmation,
+            role: options.role,
+        };
+        if (options.role === 'sender') {
+            material.sendKey = s2rKey;
+            material.receiveKey = r2sKey;
+            material.sendNoncePrefix = s2rNoncePrefix;
+            material.receiveNoncePrefix = r2sNoncePrefix;
+        } else if (options.role === 'recipient') {
+            material.sendKey = r2sKey;
+            material.receiveKey = s2rKey;
+            material.sendNoncePrefix = r2sNoncePrefix;
+            material.receiveNoncePrefix = s2rNoncePrefix;
+        }
+        return material;
+    } finally {
+        if (sharedSecret) {
+            sharedSecret.fill(0);
+        }
+    }
+}
+
+export const deriveHandshakeKeys = deriveHandshakeMaterial;
+
+export function disposeHandshakeMaterial(material: DerivedHandshakeMaterial): void {
+    material.transcriptHash.fill(0);
+    material.s2rNoncePrefix.fill(0);
+    material.r2sNoncePrefix.fill(0);
+    material.confirmation.fill(0);
+    material.sendNoncePrefix?.fill(0);
+    material.receiveNoncePrefix?.fill(0);
+}
