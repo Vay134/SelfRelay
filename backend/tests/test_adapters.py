@@ -122,7 +122,7 @@ def test_cloudflare_turn_provider_posts_scoped_request_and_maps_ice_servers() ->
     async def exercise() -> None:
         request = TurnCredentialRequest("account-1", "device-1", "transfer-1", 120)
         expected_identifier = hashlib.sha256(
-            "turn:account-1\x00device-1\x00transfer-1".encode("utf-8")
+            b"turn:account-1\x00device-1\x00transfer-1"
         ).hexdigest()
 
         async def handler(http_request: httpx.Request) -> httpx.Response:
@@ -182,9 +182,7 @@ def test_cloudflare_turn_provider_hides_http_failures_and_rejects_bad_responses(
         async def failure_handler(_: httpx.Request) -> httpx.Response:
             return httpx.Response(503, text="provider-token should never be exposed")
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(failure_handler)
-        ) as client:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(failure_handler)) as client:
             provider = CloudflareTurnCredentialProvider(
                 turn_key_id="key-id",
                 api_token="api-token",
@@ -198,9 +196,7 @@ def test_cloudflare_turn_provider_hides_http_failures_and_rejects_bad_responses(
         async def malformed_handler(_: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"iceServers": [{"urls": ["stun:only.test"]}]})
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(malformed_handler)
-        ) as client:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(malformed_handler)) as client:
             provider = CloudflareTurnCredentialProvider(
                 turn_key_id="key-id",
                 api_token="api-token",

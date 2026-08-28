@@ -92,7 +92,7 @@ def _required_turn_text(value: object, name: str) -> str:
 
 def _turn_scope_identifier(request: TurnCredentialRequest) -> str:
     scope = "\x00".join((request.account_id, request.device_id, request.transfer_id))
-    return hashlib.sha256(f"turn:{scope}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"turn:{scope}".encode()).hexdigest()
 
 
 def _validate_turn_request(request: TurnCredentialRequest) -> None:
@@ -125,7 +125,9 @@ def _ice_urls(value: object) -> list[str]:
         try:
             scheme = urlsplit(url).scheme.casefold()
         except ValueError as error:
-            raise TurnCredentialProviderError("Cloudflare returned an invalid ICE server URL") from error
+            raise TurnCredentialProviderError(
+                "Cloudflare returned an invalid ICE server URL"
+            ) from error
         if scheme not in {"stun", "turn", "turns"}:
             raise TurnCredentialProviderError("Cloudflare returned an unsupported ICE server URL")
         normalized.append(url)
@@ -155,7 +157,9 @@ def _parse_cloudflare_credentials(payload: object) -> tuple[tuple[str, ...], str
             try:
                 has_turn_url = has_turn_url or urlsplit(url).scheme.casefold() in {"turn", "turns"}
             except ValueError as error:
-                raise TurnCredentialProviderError("Cloudflare returned an invalid ICE server URL") from error
+                raise TurnCredentialProviderError(
+                    "Cloudflare returned an invalid ICE server URL"
+                ) from error
 
         raw_username = raw_server.get("username")
         raw_credential = raw_server.get("credential")
@@ -221,7 +225,9 @@ class CloudflareTurnCredentialProvider:
             else:
                 response = await self._client.post(url, headers=headers, json=payload)
         except httpx.HTTPError as error:
-            raise TurnCredentialProviderError("Cloudflare TURN credential request failed") from error
+            raise TurnCredentialProviderError(
+                "Cloudflare TURN credential request failed"
+            ) from error
 
         if not 200 <= response.status_code < 300:
             raise TurnCredentialProviderError(
@@ -230,7 +236,9 @@ class CloudflareTurnCredentialProvider:
         try:
             response_payload = response.json()
         except (TypeError, ValueError) as error:
-            raise TurnCredentialProviderError("Cloudflare returned an invalid TURN response") from error
+            raise TurnCredentialProviderError(
+                "Cloudflare returned an invalid TURN response"
+            ) from error
         urls, username, credential = _parse_cloudflare_credentials(response_payload)
         expires_at = int(self._clock() * 1_000) + request.ttl_seconds * 1_000
         return TurnCredentials(
