@@ -22,6 +22,7 @@ import {
     getOrCreateDeviceIdentity,
     loadDeviceIdentity,
 } from './deviceIdentity';
+import TransferConsole from './TransferConsole';
 
 const REQUEST_POLL_INTERVAL_MS = 2_000;
 const PENDING_REQUEST_REFRESH_INTERVAL_MS = 5_000;
@@ -195,7 +196,9 @@ function NewBrowserPairing() {
                     setState('complete');
                 } catch (completionError) {
                     if (!cancelled) {
-                        setError(errorMessage(completionError, 'The pairing could not be completed.'));
+                        setError(
+                            errorMessage(completionError, 'The pairing could not be completed.'),
+                        );
                         setState('idle');
                     }
                 }
@@ -291,8 +294,14 @@ function NewBrowserPairing() {
                             {error}
                         </p>
                     )}
-                    <button className="button button-primary" type="submit" disabled={state === 'submitting'}>
-                        {state === 'submitting' ? 'Creating secure request…' : 'Create pairing request'}
+                    <button
+                        className="button button-primary"
+                        type="submit"
+                        disabled={state === 'submitting'}
+                    >
+                        {state === 'submitting'
+                            ? 'Creating secure request…'
+                            : 'Create pairing request'}
                     </button>
                 </form>
             </section>
@@ -326,7 +335,9 @@ function NewBrowserPairing() {
             </div>
             {state === 'complete' && completedDevice ? (
                 <div className="completion-card">
-                    <span className="completion-mark" aria-hidden="true">✓</span>
+                    <span className="completion-mark" aria-hidden="true">
+                        ✓
+                    </span>
                     <div>
                         <strong>{completedDevice.label} is trusted</strong>
                         <p>Your secure session is active. You can close this page or continue.</p>
@@ -334,7 +345,10 @@ function NewBrowserPairing() {
                 </div>
             ) : (
                 <>
-                    <div className="comparison-code" aria-label={`Pairing code ${request.comparison_code}`}>
+                    <div
+                        className="comparison-code"
+                        aria-label={`Pairing code ${request.comparison_code}`}
+                    >
                         <span className="comparison-code-label">Comparison code</span>
                         <strong>{formatCode(request.comparison_code)}</strong>
                         <span className="comparison-code-help">
@@ -349,7 +363,11 @@ function NewBrowserPairing() {
                         <div>
                             <dt>Device fingerprint</dt>
                             <dd>
-                                <code title={identity?.fingerprint}>{formatFingerprint(identity?.fingerprint ?? request.fingerprint)}</code>
+                                <code title={identity?.fingerprint}>
+                                    {formatFingerprint(
+                                        identity?.fingerprint ?? request.fingerprint,
+                                    )}
+                                </code>
                             </dd>
                         </div>
                         <div>
@@ -362,18 +380,25 @@ function NewBrowserPairing() {
                         </div>
                     </dl>
                     {state === 'pending' && (
-                        <p className="inline-message inline-message-neutral" role="status" aria-live="polite">
-                            {pollNotice ?? 'Keep this window open while your trusted device reviews the request.'}
+                        <p
+                            className="inline-message inline-message-neutral"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            {pollNotice ??
+                                'Keep this window open while your trusted device reviews the request.'}
                         </p>
                     )}
                     {state === 'rejected' && (
                         <p className="inline-message inline-message-warning" role="alert">
-                            The trusted device rejected this request. Create a new request if you still want to pair.
+                            The trusted device rejected this request. Create a new request if you
+                            still want to pair.
                         </p>
                     )}
                     {state === 'expired' && (
                         <p className="inline-message inline-message-warning" role="alert">
-                            This request reached its ten-minute limit. Create a new request to try again.
+                            This request reached its ten-minute limit. Create a new request to try
+                            again.
                         </p>
                     )}
                     {error && (
@@ -465,7 +490,9 @@ function TrustedDevicePairing() {
                 delete next[pairingRequest.request_id];
                 return next;
             });
-            setNotice(`${pairingRequest.requested_label} was approved. The new browser can finish enrollment.`);
+            setNotice(
+                `${pairingRequest.requested_label} was approved. The new browser can finish enrollment.`,
+            );
         } catch (approveError) {
             setError(errorMessage(approveError, 'The pairing request could not be approved.'));
         } finally {
@@ -506,9 +533,14 @@ function TrustedDevicePairing() {
                 <p className="section-kicker">Trusted device</p>
                 <h2 id="trusted-device-title">Sign in on this browser first</h2>
                 <p className="empty-copy">
-                    Only a current trusted session can approve a new browser. Return here after signing in with this device key.
+                    Only a current trusted session can approve a new browser. Return here after
+                    signing in with this device key.
                 </p>
-                <button className="button button-secondary" type="button" onClick={() => void refresh()}>
+                <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => void refresh()}
+                >
                     Check again
                 </button>
             </section>
@@ -521,9 +553,16 @@ function TrustedDevicePairing() {
                 <div>
                     <p className="section-kicker">Trusted device</p>
                     <h2 id="trusted-device-title">Review new browser requests</h2>
-                    <p>Compare the code you heard with the request details, then approve the exact key.</p>
+                    <p>
+                        Compare the code you heard with the request details, then approve the exact
+                        key.
+                    </p>
                 </div>
-                <button className="button button-small" type="button" onClick={() => void refresh()}>
+                <button
+                    className="button button-small"
+                    type="button"
+                    onClick={() => void refresh()}
+                >
                     Refresh
                 </button>
             </div>
@@ -539,7 +578,9 @@ function TrustedDevicePairing() {
             )}
             {requests.length === 0 ? (
                 <div className="empty-state">
-                    <span className="empty-glyph" aria-hidden="true">⌁</span>
+                    <span className="empty-glyph" aria-hidden="true">
+                        ⌁
+                    </span>
                     <strong>No pending browsers</strong>
                     <p>New pairing requests will appear here automatically.</p>
                 </div>
@@ -566,14 +607,23 @@ function TrustedDevicePairing() {
                                     </div>
                                     <div>
                                         <dt>Fingerprint</dt>
-                                        <dd><code title={pairingRequest.requested_fingerprint}>{formatFingerprint(pairingRequest.requested_fingerprint)}</code></dd>
+                                        <dd>
+                                            <code title={pairingRequest.requested_fingerprint}>
+                                                {formatFingerprint(
+                                                    pairingRequest.requested_fingerprint,
+                                                )}
+                                            </code>
+                                        </dd>
                                     </div>
                                     <div>
                                         <dt>Requested</dt>
                                         <dd>{formatDate(pairingRequest.created_at)}</dd>
                                     </div>
                                 </dl>
-                                <label className="comparison-input-label" htmlFor={`code-${pairingRequest.request_id}`}>
+                                <label
+                                    className="comparison-input-label"
+                                    htmlFor={`code-${pairingRequest.request_id}`}
+                                >
                                     Six-digit code
                                     <input
                                         id={`code-${pairingRequest.request_id}`}
@@ -583,7 +633,9 @@ function TrustedDevicePairing() {
                                         maxLength={6}
                                         value={code}
                                         onChange={(event) => {
-                                            const nextCode = event.target.value.replace(/\D/gu, '').slice(0, 6);
+                                            const nextCode = event.target.value
+                                                .replace(/\D/gu, '')
+                                                .slice(0, 6);
                                             setCodes((current) => ({
                                                 ...current,
                                                 [pairingRequest.request_id]: nextCode,
@@ -620,13 +672,15 @@ function TrustedDevicePairing() {
 }
 
 function PairingConsole() {
-    const [view, setView] = useState<'new-browser' | 'trusted-device'>('new-browser');
+    const [view, setView] = useState<'new-browser' | 'trusted-device' | 'transfers'>('new-browser');
 
     return (
         <div className="app-frame">
             <header className="app-header">
                 <div className="brand-lockup">
-                    <span className="brand-mark" aria-hidden="true">↗</span>
+                    <span className="brand-mark" aria-hidden="true">
+                        ↗
+                    </span>
                     <div>
                         <p className="brand-kicker">E2E / secure transfer</p>
                         <p className="brand-name">Device desk</p>
@@ -661,8 +715,23 @@ function PairingConsole() {
                     Approve a browser
                     <span>Review requests</span>
                 </button>
+                <button
+                    className={view === 'transfers' ? 'tab tab-active' : 'tab'}
+                    type="button"
+                    aria-selected={view === 'transfers'}
+                    onClick={() => setView('transfers')}
+                >
+                    Transfer devices
+                    <span>Presence and connection test</span>
+                </button>
             </nav>
-            {view === 'new-browser' ? <NewBrowserPairing /> : <TrustedDevicePairing />}
+            {view === 'new-browser' ? (
+                <NewBrowserPairing />
+            ) : view === 'trusted-device' ? (
+                <TrustedDevicePairing />
+            ) : (
+                <TransferConsole />
+            )}
             <footer className="console-footer">
                 <span>Private keys stay in this browser.</span>
                 <span>Requests expire after ten minutes.</span>

@@ -5,9 +5,8 @@ import {
     signPairingEnrollment,
 } from './deviceIdentity';
 
-const configuredApiOrigin = (
-    import.meta as ImportMeta & { env?: { VITE_API_ORIGIN?: string } }
-).env?.VITE_API_ORIGIN;
+const configuredApiOrigin = (import.meta as ImportMeta & { env?: { VITE_API_ORIGIN?: string } }).env
+    ?.VITE_API_ORIGIN;
 export const API_ORIGIN = (configuredApiOrigin ?? 'http://localhost:8000').replace(/\/+$/u, '');
 export const PAIRING_PROTOCOL_VERSION = 1;
 
@@ -129,7 +128,7 @@ function errorDetail(body: unknown, fallback: string): string {
     return fallback;
 }
 
-async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set('Accept', 'application/json');
     if (init.body !== undefined && init.body !== null && !headers.has('Content-Type')) {
@@ -159,7 +158,10 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
         if (response.status === 403) {
             csrfToken = null;
         }
-        throw new ApiError(response.status, errorDetail(body, `Request failed (${response.status}).`));
+        throw new ApiError(
+            response.status,
+            errorDetail(body, `Request failed (${response.status}).`),
+        );
     }
     return body as T;
 }
