@@ -1265,3 +1265,582 @@ export function disposeHandshakeMaterial(material: DerivedHandshakeMaterial): vo
     material.sendNoncePrefix?.fill(0);
     material.receiveNoncePrefix?.fill(0);
 }
+
+export const FRAME_HEADER_BYTES = 31;
+export const FRAME_TAG_BYTES = 16;
+export const MAX_FRAME_PLAINTEXT_BYTES = 64 * 1024;
+export const MAX_FRAME_BYTES = FRAME_HEADER_BYTES + MAX_FRAME_PLAINTEXT_BYTES + FRAME_TAG_BYTES;
+export const MAX_FRAME_COUNTER = (1n << 64n) - 1n;
+export const CONFIRMATION_BYTES = 32;
+
+export type FrameDirection = 's2r' | 'r2s';
+export type FrameType =
+    | 'confirm'
+    | 'manifest'
+    | 'chunk'
+    | 'complete'
+    | 'receipt'
+    | 'cancel'
+    | 'error';
+
+export type FrameHeader = {
+    v: typeof TRANSFER_PROTOCOL_VERSION;
+    transfer_id: string;
+    direction: FrameDirection;
+    type: FrameType;
+    counter: bigint | number;
+    plaintext_length: number;
+};
+
+export type ParsedFrame = {
+    header: Omit<FrameHeader, 'counter'> & { counter: bigint };
+    ciphertext: Uint8Array;
+};
+
+export type EncryptFrameOptions = {
+    key: CryptoKey;
+    noncePrefix: ByteInput;
+    header: FrameHeader;
+    plaintext: ByteInput;
+};
+
+export type DecryptFrameOptions = {
+    key: CryptoKey;
+    noncePrefix: ByteInput;
+    frame: ByteInput;
+    expectedTransferId?: string;
+    expectedDirection?: FrameDirection;
+    expectedCounter?: bigint | number;
+};
+
+const FRAME_TYPE_TO_CODE: Record<FrameType, number> = {
+    confirm: 0,
+    manifest: 1,
+    chunk: 2,
+    complete: 3,
+    receipt: 4,
+    cancel: 5,
+    error: 6,
+};
+
+const FRAME_CODE_TO_TYPE: Record<number, FrameType> = {
+    0: 'confirm',
+    1: 'manifest',
+    2: 'chunk',
+    3: 'complete',
+    4: 'receipt',
+    5: 'cancel',
+    6: 'error',
+};
+
+function requireFrameDirection(value: unknown): FrameDirection {
+    if (value !== 's2r' && value !== 'r2s') {
+        throw new ProtocolError('Frame direction is invalid.', 'invalid_frame');
+    }
+    return value;
+}
+
+function requireFrameType(value: unknown): FrameType {
+    if (typeof value !== 'string' || !(value in FRAME_TYPE_TO_CODE)) {
+        throw new ProtocolError('Frame type is invalid.', 'invalid_frame');
+    }
+    return value as FrameType;
+}
+
+function requireFrameCounter(value: bigint | number): bigint {
+    let counter: bigint;
+    if (typeof value === 'bigint') {
+        counter = value;
+    } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+        counter = BigInt(value);
+    } else {
+        throw new ProtocolError('Frame counter is invalid.', 'invalid_counter');
+    }
+    if (counter < 0n || counter > MAX_FRAME_COUNTER) {
+        throw new ProtocolError('Frame counter is outside the uint64 range.', 'invalid_counter');
+    }
+    return counter;
+}
+
+function requireFrameLength(value: unknown): number {
+    if (
+        typeof value !== 'number' ||
+        !Number.isSafeInteger(value) ||
+        value < 0 ||
+        value > MAX_FRAME_PLAINTEXT_BYTES
+    ) {
+        throw new ProtocolError('Frame plaintext length is invalid.', 'invalid_length');
+    }
+    return value;
+}
+
+function uuidToBytes(value: string): Uint8Array {
+    if (!UUID_PATTERN.test(value)) {
+        throw new ProtocolError('Frame transfer identifier is invalid.', 'invalid_frame');
+    }
+    const hex = value.replace(/-/gu, '');
+    const bytes = new Uint8Array(16);
+    for (let index = 0; index < bytes.length; index += 1) {
+        bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+    }
+    return bytes;
+}
+
+function bytesToUuid(bytes: Uint8Array): string {
+    if (bytes.byteLength !== 16) {
+        throw new ProtocolError('Frame transfer identifier is invalid.', 'invalid_frame');
+    }
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function frameDirectionCode(direction: FrameDirection): number {
+    return direction === 's2r' ? 0 : 1;
+}
+
+function codeToFrameDirection(code: number): FrameDirection {
+    if (code === 0) {
+        return 's2r';
+    }
+    if (code === 1) {
+        return 'r2s';
+    }
+    throw new ProtocolError('Frame direction is invalid.', 'invalid_frame');
+}
+
+function oppositeDirection(direction: FrameDirection): FrameDirection {
+    return direction === 's2r' ? 'r2s' : 's2r';
+}
+
+function validateFrameTypeDirection(direction: FrameDirection, type: FrameType): void {
+    if ((type === 'manifest' || type === 'chunk' || type === 'complete') && direction !== 's2r') {
+        throw new ProtocolError('Frame type is not valid for this direction.', 'invalid_frame');
+    }
+    if (type === 'receipt' && direction !== 'r2s') {
+        throw new ProtocolError('Frame type is not valid for this direction.', 'invalid_frame');
+    }
+}
+
+/** Encode the fixed 31-byte authenticated frame header. */
+export function encodeFrameHeader(header: FrameHeader): Uint8Array {
+    if (header.v !== TRANSFER_PROTOCOL_VERSION) {
+        throw new ProtocolError('Frame version is unsupported.', 'unsupported_version');
+    }
+    const transferId = requireUuid(header.transfer_id, 'transfer_id');
+    const direction = requireFrameDirection(header.direction);
+    const type = requireFrameType(header.type);
+    const counter = requireFrameCounter(header.counter);
+    const plaintextLength = requireFrameLength(header.plaintext_length);
+    validateFrameTypeDirection(direction, type);
+    const output = new Uint8Array(FRAME_HEADER_BYTES);
+    const view = new DataView(output.buffer);
+    view.setUint8(0, TRANSFER_PROTOCOL_VERSION);
+    output.set(uuidToBytes(transferId), 1);
+    view.setUint8(17, frameDirectionCode(direction));
+    view.setUint8(18, FRAME_TYPE_TO_CODE[type]);
+    view.setBigUint64(19, counter, false);
+    view.setUint32(27, plaintextLength, false);
+    return output;
+}
+
+/** Parse and validate a complete fixed-size frame header. */
+export function parseFrameHeader(value: ByteInput): ParsedFrame['header'] {
+    const bytes = copyBytes(value);
+    if (bytes.byteLength !== FRAME_HEADER_BYTES) {
+        throw new ProtocolError('Frame header has an invalid length.', 'invalid_length');
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint8(0) !== TRANSFER_PROTOCOL_VERSION) {
+        throw new ProtocolError('Frame version is unsupported.', 'unsupported_version');
+    }
+    const direction = codeToFrameDirection(view.getUint8(17));
+    const type = FRAME_CODE_TO_TYPE[view.getUint8(18)];
+    if (type === undefined) {
+        throw new ProtocolError('Frame type is invalid.', 'invalid_frame');
+    }
+    const counter = view.getBigUint64(19, false);
+    const plaintextLength = view.getUint32(27, false);
+    requireFrameLength(plaintextLength);
+    validateFrameTypeDirection(direction, type);
+    return {
+        v: TRANSFER_PROTOCOL_VERSION,
+        transfer_id: bytesToUuid(bytes.slice(1, 17)),
+        direction,
+        type,
+        counter,
+        plaintext_length: plaintextLength,
+    };
+}
+
+export function frameNonce(noncePrefix: ByteInput, counter: bigint | number): Uint8Array {
+    const prefix = copyBytes(noncePrefix);
+    if (prefix.byteLength !== 4) {
+        throw new ProtocolError('Frame nonce prefix must be 4 bytes.', 'invalid_nonce');
+    }
+    const normalizedCounter = requireFrameCounter(counter);
+    const nonce = new Uint8Array(12);
+    nonce.set(prefix);
+    new DataView(nonce.buffer).setBigUint64(4, normalizedCounter, false);
+    return nonce;
+}
+
+export const buildFrameNonce = frameNonce;
+
+export async function encryptFrame(options: EncryptFrameOptions): Promise<Uint8Array> {
+    const plaintext = copyBytes(options.plaintext);
+    if (options.header.plaintext_length !== plaintext.byteLength) {
+        throw new ProtocolError(
+            'Frame plaintext length does not match the header.',
+            'invalid_length',
+        );
+    }
+    const header = options.header;
+    const headerBytes = encodeFrameHeader(header);
+    try {
+        const ciphertext = copyBytes(
+            await cryptoProvider().subtle.encrypt(
+                {
+                    name: 'AES-GCM',
+                    iv: asBufferSource(frameNonce(options.noncePrefix, header.counter)),
+                    additionalData: asBufferSource(headerBytes),
+                    tagLength: 128,
+                },
+                options.key,
+                asBufferSource(plaintext),
+            ),
+        );
+        if (ciphertext.byteLength !== plaintext.byteLength + FRAME_TAG_BYTES) {
+            throw new ProtocolError('AES-GCM returned an invalid frame.', 'crypto_failure');
+        }
+        const output = new Uint8Array(headerBytes.byteLength + ciphertext.byteLength);
+        output.set(headerBytes);
+        output.set(ciphertext, headerBytes.byteLength);
+        return output;
+    } catch (error) {
+        if (error instanceof ProtocolError) {
+            throw error;
+        }
+        throw new ProtocolError('Unable to encrypt the frame.', 'crypto_failure');
+    }
+}
+
+export function splitFrame(value: ByteInput): {
+    header: ParsedFrame['header'];
+    ciphertext: Uint8Array;
+} {
+    const bytes = copyBytes(value);
+    if (
+        bytes.byteLength < FRAME_HEADER_BYTES + FRAME_TAG_BYTES ||
+        bytes.byteLength > MAX_FRAME_BYTES
+    ) {
+        throw new ProtocolError('Frame has an invalid length.', 'invalid_length');
+    }
+    const header = parseFrameHeader(bytes.slice(0, FRAME_HEADER_BYTES));
+    const expectedLength = FRAME_HEADER_BYTES + header.plaintext_length + FRAME_TAG_BYTES;
+    if (bytes.byteLength !== expectedLength) {
+        throw new ProtocolError('Frame length does not match its header.', 'invalid_length');
+    }
+    return { header, ciphertext: bytes.slice(FRAME_HEADER_BYTES) };
+}
+
+export async function decryptFrame(
+    options: DecryptFrameOptions,
+): Promise<ParsedFrame & { plaintext: Uint8Array }> {
+    const { header, ciphertext } = splitFrame(options.frame);
+    if (
+        options.expectedTransferId !== undefined &&
+        header.transfer_id !== options.expectedTransferId
+    ) {
+        throw new ProtocolError('Frame transfer identifier does not match.', 'identity_mismatch');
+    }
+    if (options.expectedDirection !== undefined && header.direction !== options.expectedDirection) {
+        throw new ProtocolError('Frame direction does not match.', 'direction_mismatch');
+    }
+    const actualCounter = requireFrameCounter(header.counter);
+    if (
+        options.expectedCounter !== undefined &&
+        actualCounter !== requireFrameCounter(options.expectedCounter)
+    ) {
+        throw new ProtocolError('Frame counter is out of order.', 'counter_mismatch');
+    }
+    try {
+        const plaintext = copyBytes(
+            await cryptoProvider().subtle.decrypt(
+                {
+                    name: 'AES-GCM',
+                    iv: asBufferSource(frameNonce(options.noncePrefix, header.counter)),
+                    additionalData: asBufferSource(encodeFrameHeader(header)),
+                    tagLength: 128,
+                },
+                options.key,
+                asBufferSource(ciphertext),
+            ),
+        );
+        if (plaintext.byteLength !== header.plaintext_length) {
+            throw new ProtocolError('Frame plaintext length does not match.', 'invalid_length');
+        }
+        return { header, ciphertext, plaintext };
+    } catch (error) {
+        if (error instanceof ProtocolError) {
+            throw error;
+        }
+        throw new ProtocolError('Frame authentication failed.', 'authentication_failed');
+    }
+}
+
+export class FrameCounter {
+    private nextValue = 0n;
+
+    constructor(initialValue: bigint | number = 0n) {
+        this.nextValue = requireFrameCounter(initialValue);
+    }
+
+    get next(): bigint {
+        return this.nextValue;
+    }
+
+    reserve(): bigint {
+        if (this.nextValue > MAX_FRAME_COUNTER) {
+            throw new ProtocolError('Frame counter wrapped.', 'counter_wraparound');
+        }
+        const value = this.nextValue;
+        this.nextValue += 1n;
+        return value;
+    }
+
+    accept(value: bigint | number): void {
+        const counter = requireFrameCounter(value);
+        if (counter !== this.nextValue) {
+            throw new ProtocolError(
+                'Frame counter is duplicated or out of order.',
+                'counter_mismatch',
+            );
+        }
+        if (this.nextValue === MAX_FRAME_COUNTER) {
+            this.nextValue = MAX_FRAME_COUNTER + 1n;
+            return;
+        }
+        this.nextValue += 1n;
+    }
+}
+
+export type FrameStreamOptions = {
+    transferId: string;
+    direction: FrameDirection;
+    confirmation?: ByteInput;
+};
+
+function sameBytes(left: ByteInput, right: ByteInput): boolean {
+    return equalBytes(left, right);
+}
+
+function sequenceTypeAllowed(
+    previous: FrameType | null,
+    next: FrameType,
+    direction: FrameDirection,
+): boolean {
+    if (next === 'confirm') {
+        return previous === null;
+    }
+    if (previous === null || previous === 'confirm') {
+        return next === 'manifest' || next === 'receipt' || next === 'cancel' || next === 'error';
+    }
+    if (next === 'chunk') {
+        return direction === 's2r' && (previous === 'manifest' || previous === 'chunk');
+    }
+    if (next === 'complete') {
+        return direction === 's2r' && (previous === 'manifest' || previous === 'chunk');
+    }
+    if (next === 'receipt') {
+        return direction === 'r2s' && previous === 'complete';
+    }
+    return next === 'cancel' || next === 'error';
+}
+
+/** Stateful stream guard for ordered counters and handshake confirmation. */
+export class FrameStream {
+    readonly transferId: string;
+    readonly direction: FrameDirection;
+    readonly receiveDirection: FrameDirection;
+    private readonly sendCounter = new FrameCounter();
+    private readonly receiveCounter = new FrameCounter();
+    private readonly confirmation?: Uint8Array;
+    private sentConfirmation = false;
+    private receivedConfirmation = false;
+    private sentType: FrameType | null = null;
+    private receivedType: FrameType | null = null;
+
+    constructor(options: FrameStreamOptions) {
+        this.transferId = requireUuid(options.transferId, 'transfer_id');
+        this.direction = requireFrameDirection(options.direction);
+        this.receiveDirection = oppositeDirection(this.direction);
+        if (options.confirmation !== undefined) {
+            const confirmation = copyBytes(options.confirmation);
+            if (confirmation.byteLength !== CONFIRMATION_BYTES) {
+                throw new ProtocolError('Confirmation must be 32 bytes.', 'invalid_confirmation');
+            }
+            this.confirmation = confirmation;
+        }
+    }
+
+    get isConfirmed(): boolean {
+        return this.sentConfirmation && this.receivedConfirmation;
+    }
+
+    get nextSendCounter(): bigint {
+        return this.sendCounter.next;
+    }
+
+    get nextReceiveCounter(): bigint {
+        return this.receiveCounter.next;
+    }
+
+    async createFrame(
+        key: CryptoKey,
+        noncePrefix: ByteInput,
+        type: FrameType,
+        plaintext: ByteInput,
+    ): Promise<Uint8Array> {
+        const normalizedType = requireFrameType(type);
+        validateFrameTypeDirection(this.direction, normalizedType);
+        const body = copyBytes(plaintext);
+        if (!sequenceTypeAllowed(this.sentType, normalizedType, this.direction)) {
+            throw new ProtocolError(
+                'Frame type is invalid for the current stream state.',
+                'invalid_state',
+            );
+        }
+        if (!this.sentConfirmation && normalizedType !== 'confirm') {
+            throw new ProtocolError('Confirmation must be sent first.', 'confirmation_required');
+        }
+        if (normalizedType === 'confirm') {
+            if (
+                this.sentConfirmation ||
+                this.sendCounter.next !== 0n ||
+                body.byteLength !== CONFIRMATION_BYTES
+            ) {
+                throw new ProtocolError('Confirmation frame is invalid.', 'invalid_confirmation');
+            }
+            if (this.confirmation && !sameBytes(this.confirmation, body)) {
+                throw new ProtocolError(
+                    'Confirmation value does not match the transcript.',
+                    'invalid_confirmation',
+                );
+            }
+        } else if (!this.receivedConfirmation) {
+            throw new ProtocolError(
+                'Peer confirmation is required before data.',
+                'confirmation_required',
+            );
+        }
+        const frame = await encryptFrame({
+            key,
+            noncePrefix,
+            header: {
+                v: TRANSFER_PROTOCOL_VERSION,
+                transfer_id: this.transferId,
+                direction: this.direction,
+                type: normalizedType,
+                counter: this.sendCounter.reserve(),
+                plaintext_length: body.byteLength,
+            },
+            plaintext: body,
+        });
+        this.sentCounterApplied(normalizedType);
+        return frame;
+    }
+
+    private sentCounterApplied(type: FrameType): void {
+        if (type === 'confirm') {
+            this.sentConfirmation = true;
+        }
+        this.sentType = type;
+    }
+
+    async receiveFrame(
+        key: CryptoKey,
+        noncePrefix: ByteInput,
+        frame: ByteInput,
+    ): Promise<ParsedFrame & { plaintext: Uint8Array }> {
+        const parsed = splitFrame(frame);
+        if (
+            parsed.header.transfer_id !== this.transferId ||
+            parsed.header.direction !== this.receiveDirection
+        ) {
+            throw new ProtocolError(
+                'Frame identity or direction does not match.',
+                'identity_mismatch',
+            );
+        }
+        const type = parsed.header.type;
+        if (!sequenceTypeAllowed(this.receivedType, type, this.receiveDirection)) {
+            throw new ProtocolError(
+                'Frame type is invalid for the current stream state.',
+                'invalid_state',
+            );
+        }
+        if (parsed.header.counter !== this.receiveCounter.next) {
+            throw new ProtocolError(
+                'Frame counter is duplicated or out of order.',
+                'counter_mismatch',
+            );
+        }
+        try {
+            const result = await decryptFrame({
+                key,
+                noncePrefix,
+                frame,
+                expectedTransferId: this.transferId,
+                expectedDirection: this.receiveDirection,
+                expectedCounter: this.receiveCounter.next,
+            });
+            this.receiveCounter.accept(parsed.header.counter);
+            if (!this.receivedConfirmation && type !== 'confirm') {
+                throw new ProtocolError(
+                    'Confirmation must be received first.',
+                    'confirmation_required',
+                );
+            }
+            if (type === 'confirm') {
+                if (
+                    this.receivedConfirmation ||
+                    parsed.header.counter !== 0n ||
+                    result.plaintext.byteLength !== CONFIRMATION_BYTES
+                ) {
+                    throw new ProtocolError(
+                        'Confirmation frame is invalid.',
+                        'invalid_confirmation',
+                    );
+                }
+                if (this.confirmation && !sameBytes(this.confirmation, result.plaintext)) {
+                    throw new ProtocolError(
+                        'Confirmation value does not match the transcript.',
+                        'invalid_confirmation',
+                    );
+                }
+                this.receivedConfirmation = true;
+            }
+            this.receivedType = type;
+            return result;
+        } catch (error) {
+            throw error instanceof ProtocolError
+                ? error
+                : new ProtocolError('Frame processing failed.', 'invalid_frame');
+        }
+    }
+}
+
+export const EncryptedFrameStream = FrameStream;
+
+export function confirmationPayload(material: DerivedHandshakeMaterial): Uint8Array {
+    return copyBytes(material.confirmation);
+}
+
+export async function createConfirmationFrame(
+    stream: FrameStream,
+    key: CryptoKey,
+    noncePrefix: ByteInput,
+    confirmation: ByteInput,
+): Promise<Uint8Array> {
+    return stream.createFrame(key, noncePrefix, 'confirm', confirmation);
+}

@@ -11,6 +11,14 @@ import {
     createHandshakeAnswer,
     createHandshakeOffer,
     deriveHandshakeMaterial,
+    decryptFrame,
+    encodeFrameHeader,
+    encryptFrame,
+    FrameCounter,
+    FrameStream,
+    frameNonce,
+    parseFrameHeader,
+    splitFrame,
     generateP256SigningKeyPair,
     importP256Spki,
     p1363ToDer,
@@ -207,5 +215,109 @@ describe('transfer protocol primitives', () => {
                 encrypted,
             ),
         ).resolves.toEqual(plaintext.buffer);
+    });
+
+    it('encodes bounded headers and authenticates them with AES-GCM', async () => {
+        const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+            'encrypt',
+            'decrypt',
+        ]);
+        const header = {
+            v: 1 as const,
+            transfer_id: '11111111-1111-4111-8111-111111111111',
+            direction: 's2r' as const,
+            type: 'confirm' as const,
+            counter: 0n,
+            plaintext_length: 32,
+        };
+        const plaintext = new Uint8Array(32).fill(9);
+        const frame = await encryptFrame({
+            key,
+            noncePrefix: Uint8Array.of(1, 2, 3, 4),
+            header,
+            plaintext,
+        });
+        expect(frame).toHaveLength(31 + 32 + 16);
+        expect(parseFrameHeader(frame.slice(0, 31))).toEqual(header);
+        expect(splitFrame(frame).ciphertext).toHaveLength(48);
+        await expect(
+            decryptFrame({
+                key,
+                noncePrefix: Uint8Array.of(1, 2, 3, 4),
+                frame,
+                expectedTransferId: header.transfer_id,
+                expectedDirection: 's2r',
+                expectedCounter: 0n,
+            }),
+        ).resolves.toMatchObject({ header, plaintext });
+        const tamperedHeader = frame.slice();
+        tamperedHeader[18] = 1;
+        await expect(
+            decryptFrame({ key, noncePrefix: Uint8Array.of(1, 2, 3, 4), frame: tamperedHeader }),
+        ).rejects.toThrow(/authentication|direction|length|frame/u);
+        expect(frameNonce(Uint8Array.of(1, 2, 3, 4), 7n)).toEqual(
+            Uint8Array.of(1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 7),
+        );
+        expect(() => encodeFrameHeader({ ...header, counter: -1 })).toThrow(/counter/u);
+    });
+
+    it('rejects duplicate, skipped, and wrapped counters', () => {
+        const counter = new FrameCounter();
+        expect(counter.reserve()).toBe(0n);
+        expect(counter.reserve()).toBe(1n);
+        const received = new FrameCounter();
+        expect(() => received.accept(1n)).toThrow(/order/u);
+        received.accept(0n);
+        expect(() => received.accept(0n)).toThrow(/order/u);
+        const last = new FrameCounter((1n << 64n) - 1n);
+        expect(last.reserve()).toBe((1n << 64n) - 1n);
+        expect(() => last.reserve()).toThrow(/wrap/u);
+        const maxReceived = new FrameCounter((1n << 64n) - 1n);
+        maxReceived.accept((1n << 64n) - 1n);
+        expect(() => maxReceived.accept(0n)).toThrow(/order|counter/u);
+    });
+
+    it('requires transcript confirmation before allowing data frames', async () => {
+        const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+            'encrypt',
+            'decrypt',
+        ]);
+        const confirmation = new Uint8Array(32).fill(4);
+        const sender = new FrameStream({
+            transferId: '77777777-7777-4777-8777-777777777777',
+            direction: 's2r',
+            confirmation,
+        });
+        const receiver = new FrameStream({
+            transferId: sender.transferId,
+            direction: 'r2s',
+            confirmation,
+        });
+        await expect(
+            sender.createFrame(key, Uint8Array.of(1, 2, 3, 4), 'manifest', new Uint8Array()),
+        ).rejects.toThrow(/Confirmation/u);
+        const confirm = await sender.createFrame(
+            key,
+            Uint8Array.of(1, 2, 3, 4),
+            'confirm',
+            confirmation,
+        );
+        await receiver.receiveFrame(key, Uint8Array.of(1, 2, 3, 4), confirm);
+        const reverseConfirm = await receiver.createFrame(
+            key,
+            Uint8Array.of(5, 6, 7, 8),
+            'confirm',
+            confirmation,
+        );
+        await sender.receiveFrame(key, Uint8Array.of(5, 6, 7, 8), reverseConfirm);
+        const manifest = await sender.createFrame(
+            key,
+            Uint8Array.of(1, 2, 3, 4),
+            'manifest',
+            new TextEncoder().encode('manifest'),
+        );
+        await receiver.receiveFrame(key, Uint8Array.of(1, 2, 3, 4), manifest);
+        expect(sender.isConfirmed).toBe(true);
+        expect(receiver.isConfirmed).toBe(true);
     });
 });
