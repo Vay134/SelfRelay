@@ -121,6 +121,47 @@ class SessionRepository:
         row = first_row(rows)
         return None if row is None else session_from_row(row)
 
+    async def find_current_by_id(self, session_id: UUID) -> SessionRecord | None:
+        """Return one currently usable session by its identifier.
+
+        This lookup is used after a single-use WebSocket ticket has been
+        atomically consumed.  The joins keep a revoked device, deleted
+        account, or stale account epoch from admitting the socket.
+        """
+
+        rows = await self._database.fetch(
+            """SELECT
+                session.id,
+                session.user_id,
+                session.device_id,
+                session.token_hash,
+                session.csrf_hash,
+                session.epoch,
+                session.created_at,
+                session.last_seen_at,
+                session.idle_expires_at,
+                session.absolute_expires_at,
+                session.revoked_at,
+                session.revocation_reason
+            FROM private.app_sessions AS session
+            JOIN private.app_users AS account
+              ON account.id = session.user_id
+            JOIN private.devices AS device
+              ON device.user_id = session.user_id
+             AND device.id = session.device_id
+            WHERE session.id = $1
+              AND session.revoked_at IS NULL
+              AND session.idle_expires_at > CURRENT_TIMESTAMP
+              AND session.absolute_expires_at > CURRENT_TIMESTAMP
+              AND account.deleted_at IS NULL
+              AND account.device_epoch = session.epoch
+              AND device.status = 'active'
+              AND device.epoch = session.epoch""",
+            session_id,
+        )
+        row = first_row(rows)
+        return None if row is None else session_from_row(row)
+
     async def list_for_account(self, account_id: UUID) -> list[SessionRecord]:
         """Return all sessions belonging to one account, newest first."""
 

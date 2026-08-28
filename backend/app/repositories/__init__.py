@@ -34,7 +34,12 @@ from .security_events import (
 )
 from .sessions import SessionRepository
 from .transfers import TransferRepository, TransferRequestRepository
-from .websocket_tickets import WebSocketTicketRepository, WebsocketTicketRepository
+from .websocket_tickets import (
+    InMemoryWebSocketTicketRepository,
+    InMemoryWebsocketTicketRepository,
+    WebSocketTicketRepository,
+    WebsocketTicketRepository,
+)
 
 __all__ = [
     "AccountRecord",
@@ -73,4 +78,6 @@ __all__ = [
     "WebSocketTicketRecord",
     "WebSocketTicketRepository",
     "WebsocketTicketRepository",
+    "InMemoryWebSocketTicketRepository",
+    "InMemoryWebsocketTicketRepository",
 ]

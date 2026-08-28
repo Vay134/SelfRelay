@@ -326,6 +326,16 @@ class InMemorySessionRepository:
                 return None
             return record
 
+    async def find_current_by_id(self, session_id: UUID) -> SessionRecord | None:
+        """Return one currently usable session by its identifier."""
+
+        current = datetime.now(UTC)
+        with self._lock:
+            record = self._records.get(session_id)
+            if record is None or not self._is_usable(record, current):
+                return None
+            return record
+
     async def get_by_token_hash(
         self,
         account_id: UUID,

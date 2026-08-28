@@ -848,6 +848,11 @@ async def revoke_device(
     )
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=DEVICE_AUTH_FAILURE)
+    presence_manager = getattr(request.app.state, "presence_manager", None)
+    if presence_manager is not None:
+        disconnect = getattr(presence_manager, "disconnect_device", None)
+        if callable(disconnect):
+            await disconnect(account_id, device_id)
     if device_id == session.device_id:
         from .session_api import clear_session_cookie
 
