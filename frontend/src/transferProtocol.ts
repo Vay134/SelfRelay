@@ -109,11 +109,33 @@ function compareUtf16(left: string, right: string): number {
     return 0;
 }
 
+function assertWellFormedUnicode(value: string): void {
+    for (let index = 0; index < value.length; index += 1) {
+        const codeUnit = value.charCodeAt(index);
+        if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+            const nextCodeUnit = value.charCodeAt(index + 1);
+            if (index + 1 >= value.length || nextCodeUnit < 0xdc00 || nextCodeUnit > 0xdfff) {
+                throw new ProtocolError(
+                    'Canonical JSON strings must contain well-formed Unicode.',
+                    'invalid_json',
+                );
+            }
+            index += 1;
+        } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+            throw new ProtocolError(
+                'Canonical JSON strings must contain well-formed Unicode.',
+                'invalid_json',
+            );
+        }
+    }
+}
+
 function canonicalJsonValue(value: unknown, seen: Set<object>): string {
     if (value === null) {
         return 'null';
     }
     if (typeof value === 'string') {
+        assertWellFormedUnicode(value);
         return JSON.stringify(value);
     }
     if (typeof value === 'boolean') {
@@ -160,10 +182,10 @@ function canonicalJsonValue(value: unknown, seen: Set<object>): string {
         }
         const entries = Object.keys(value)
             .sort(compareUtf16)
-            .map(
-                (key) =>
-                    `${JSON.stringify(key)}:${canonicalJsonValue((value as Record<string, unknown>)[key], seen)}`,
-            );
+            .map((key) => {
+                assertWellFormedUnicode(key);
+                return `${JSON.stringify(key)}:${canonicalJsonValue((value as Record<string, unknown>)[key], seen)}`;
+            });
         encoded = `{${entries.join(',')}}`;
     }
     seen.delete(value);
@@ -661,6 +683,8 @@ type SignedMessageOptions = {
     ephemeralKeyPair?: CryptoKeyPair;
 };
 
+const callerEphemeralTransferIds = new Map<string, string>();
+
 export type HandshakeOfferOptions = SignedMessageOptions;
 
 export type HandshakeAnswerOptions = Omit<SignedMessageOptions, 'nonce'> & {
@@ -888,16 +912,37 @@ function assertMessageOptions(options: SignedMessageOptions): {
     return { issuedAt, expiresAt, nonce };
 }
 
+function reserveCallerEphemeralKeyPair(
+    ephemeralKeyPair: CryptoKeyPair | undefined,
+    transferId: string,
+    publicSpki: Uint8Array,
+): void {
+    if (ephemeralKeyPair === undefined) {
+        return;
+    }
+    const publicKeyId = encodeBase64Url(publicSpki);
+    const reservedTransferId = callerEphemeralTransferIds.get(publicKeyId);
+    if (reservedTransferId !== undefined && reservedTransferId !== transferId) {
+        throw new ProtocolError(
+            'Caller-supplied ephemeral key material cannot be reused across transfers.',
+            'ephemeral_key_reuse',
+        );
+    }
+    callerEphemeralTransferIds.set(publicKeyId, transferId);
+}
+
 export async function createHandshakeOffer(
     options: HandshakeOfferOptions,
 ): Promise<HandshakeOfferResult> {
     const { issuedAt, expiresAt, nonce } = assertMessageOptions(options);
     const ephemeralKeyPair = options.ephemeralKeyPair ?? (await generateP256AgreementKeyPair());
     const ephemeralSpki = await exportSpki(ephemeralKeyPair.publicKey);
+    const transferId = requireUuid(options.transferId, 'transfer_id');
+    reserveCallerEphemeralKeyPair(options.ephemeralKeyPair, transferId, ephemeralSpki);
     const core: HandshakeOfferCore = {
         v: TRANSFER_PROTOCOL_VERSION,
         type: 'handshake_offer',
-        transfer_id: options.transferId,
+        transfer_id: transferId,
         account_epoch: options.accountEpoch,
         sender_device_id: options.senderDeviceId,
         recipient_device_id: options.recipientDeviceId,
@@ -940,6 +985,7 @@ export async function createHandshakeAnswer(
     }
     const ephemeralKeyPair = options.ephemeralKeyPair ?? (await generateP256AgreementKeyPair());
     const ephemeralSpki = await exportSpki(ephemeralKeyPair.publicKey);
+    reserveCallerEphemeralKeyPair(options.ephemeralKeyPair, offer.transfer_id, ephemeralSpki);
     const offerHash = await sha256(canonicalJsonBytes(offer));
     const core: HandshakeAnswerCore = {
         v: TRANSFER_PROTOCOL_VERSION,

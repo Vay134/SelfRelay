@@ -42,6 +42,20 @@ describe('transfer protocol primitives', () => {
         );
     });
 
+    it('rejects lone UTF-16 surrogates in RFC 8785 strings and keys', () => {
+        const highSurrogate = '\uD800';
+        const lowSurrogate = '\uDC00';
+        const validPair = '\uD83D\uDE00';
+
+        for (const value of [highSurrogate, lowSurrogate]) {
+            expect(() => canonicalJson(value)).toThrow(/well-formed Unicode/u);
+            expect(() => canonicalJson({ value })).toThrow(/well-formed Unicode/u);
+        }
+        expect(() => canonicalJson({ [highSurrogate]: 'value' })).toThrow(/well-formed Unicode/u);
+        expect(() => parseCanonicalJson('{"value":"\\ud800"}')).toThrow(/well-formed Unicode/u);
+        expect(canonicalJson({ value: validPair })).toBe('{"value":"😀"}');
+    });
+
     it('rejects unsupported canonical values and duplicate JSON keys', () => {
         expect(() => canonicalJson({ value: Number.NaN })).toThrow(/non-finite/u);
         expect(() => canonicalJson({ value: undefined })).toThrow(/support/u);
@@ -146,6 +160,105 @@ describe('transfer protocol primitives', () => {
         await expect(
             verifyHandshakeAnswer(alteredAnswer, recipientSigning.publicKey, { offer, now }),
         ).resolves.toBe(false);
+    });
+
+    it('rejects caller-supplied ephemeral material reused by another transfer', async () => {
+        const senderSigning = await generateP256SigningKeyPair();
+        const recipientSigning = await generateP256SigningKeyPair();
+        const suppliedOfferEphemeral = await crypto.subtle.generateKey(
+            { name: 'ECDH', namedCurve: 'P-256' },
+            false,
+            ['deriveBits'],
+        );
+        const suppliedAnswerEphemeral = await crypto.subtle.generateKey(
+            { name: 'ECDH', namedCurve: 'P-256' },
+            false,
+            ['deriveBits'],
+        );
+        const now = Date.now();
+        const senderDeviceId = '22222222-2222-4222-8222-222222222222';
+        const recipientDeviceId = '33333333-3333-4333-8333-333333333333';
+        const expiresAt = now + 30_000;
+
+        await expect(
+            createHandshakeOffer({
+                transferId: '11111111-1111-4111-8111-111111111111',
+                accountEpoch: 4,
+                senderDeviceId,
+                recipientDeviceId,
+                issuedAt: now,
+                expiresAt,
+                signingKey: senderSigning.privateKey,
+                nonce: new Uint8Array(32).fill(1),
+                ephemeralKeyPair: suppliedOfferEphemeral,
+            }),
+        ).resolves.toMatchObject({
+            ephemeralKeyPair: suppliedOfferEphemeral,
+        });
+        await expect(
+            createHandshakeOffer({
+                transferId: '44444444-4444-4444-8444-444444444444',
+                accountEpoch: 4,
+                senderDeviceId,
+                recipientDeviceId,
+                issuedAt: now,
+                expiresAt,
+                signingKey: senderSigning.privateKey,
+                nonce: new Uint8Array(32).fill(2),
+                ephemeralKeyPair: suppliedOfferEphemeral,
+            }),
+        ).rejects.toMatchObject({ code: 'ephemeral_key_reuse' });
+
+        const firstOffer = await createHandshakeOffer({
+            transferId: '55555555-5555-4555-8555-555555555555',
+            accountEpoch: 4,
+            senderDeviceId,
+            recipientDeviceId,
+            issuedAt: now,
+            expiresAt,
+            signingKey: senderSigning.privateKey,
+            nonce: new Uint8Array(32).fill(3),
+        });
+        const secondOffer = await createHandshakeOffer({
+            transferId: '66666666-6666-4666-8666-666666666666',
+            accountEpoch: 4,
+            senderDeviceId,
+            recipientDeviceId,
+            issuedAt: now,
+            expiresAt,
+            signingKey: senderSigning.privateKey,
+            nonce: new Uint8Array(32).fill(4),
+        });
+        await expect(
+            createHandshakeAnswer({
+                transferId: firstOffer.core.transfer_id,
+                accountEpoch: firstOffer.core.account_epoch,
+                senderDeviceId,
+                recipientDeviceId,
+                issuedAt: now + 1,
+                expiresAt,
+                signingKey: recipientSigning.privateKey,
+                nonce: new Uint8Array(32).fill(5),
+                offer: firstOffer,
+                ephemeralKeyPair: suppliedAnswerEphemeral,
+            }),
+        ).resolves.toMatchObject({
+            ephemeralKeyPair: suppliedAnswerEphemeral,
+        });
+        await expect(
+            createHandshakeAnswer({
+                transferId: secondOffer.core.transfer_id,
+                accountEpoch: secondOffer.core.account_epoch,
+                senderDeviceId,
+                recipientDeviceId,
+                issuedAt: now + 1,
+                expiresAt,
+                signingKey: recipientSigning.privateKey,
+                nonce: new Uint8Array(32).fill(6),
+                offer: secondOffer,
+                ephemeralKeyPair: suppliedAnswerEphemeral,
+            }),
+        ).rejects.toMatchObject({ code: 'ephemeral_key_reuse' });
     });
 
     it('creates the same transcript and directional HKDF material on both peers', async () => {
