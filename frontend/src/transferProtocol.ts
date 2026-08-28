@@ -1877,6 +1877,7 @@ export class FrameStream {
 }
 
 export const EncryptedFrameStream = FrameStream;
+export const TransferStreamGuard = FrameStream;
 
 export function confirmationPayload(material: DerivedHandshakeMaterial): Uint8Array {
     return copyBytes(material.confirmation);
