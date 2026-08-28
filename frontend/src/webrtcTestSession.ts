@@ -1,4 +1,6 @@
 import {
+    buildHandshakeAnswerEnvelope,
+    buildHandshakeOfferEnvelope,
     buildIceCandidateEnvelope,
     buildSdpAnswerEnvelope,
     buildSdpOfferEnvelope,
@@ -6,6 +8,16 @@ import {
     type SignalingEnvelope,
     type TransferRequest,
 } from './transferApi';
+import {
+    assertValidHandshakeAnswer,
+    assertValidHandshakeOffer,
+    createHandshakeAnswer,
+    createHandshakeOffer,
+    decodeBase64Url,
+    deriveHandshakeMaterial,
+    type DerivedHandshakeMaterial,
+    type SignedHandshakeOffer,
+} from './transferProtocol';
 
 export type WebRtcTestRole = 'sender' | 'recipient';
 
@@ -21,6 +33,10 @@ export type WebRtcTestSessionOptions = {
     rtcConfiguration?: RTCConfiguration;
     onStateChange?: (state: WebRtcTestState) => void;
     onDataChannel?: (channel: RTCDataChannel) => void;
+    signingKey?: CryptoKey;
+    peerSigningPublicKey?: CryptoKey | Uint8Array;
+    accountEpoch?: number;
+    onHandshake?: (material: DerivedHandshakeMaterial) => void;
 };
 
 export class WebRtcTestSession {
@@ -30,11 +46,18 @@ export class WebRtcTestSession {
     private readonly sendSignal: WebRtcTestSessionOptions['sendSignal'];
     private readonly onStateChange?: (state: WebRtcTestState) => void;
     private readonly onDataChannel?: (channel: RTCDataChannel) => void;
+    private readonly signingKey?: CryptoKey;
+    private readonly peerSigningPublicKey?: CryptoKey | Uint8Array;
+    private readonly accountEpoch?: number;
+    private readonly onHandshake?: (material: DerivedHandshakeMaterial) => void;
     private stateValue: WebRtcTestState = 'idle';
     private dataChannel: RTCDataChannel | null = null;
     private remoteDescriptionReady = false;
     private pendingCandidates: RTCIceCandidateInit[] = [];
     private started = false;
+    private handshakeOffer: SignedHandshakeOffer | null = null;
+    private handshakeEphemeralPrivateKey: CryptoKey | null = null;
+    private materialValue: DerivedHandshakeMaterial | null = null;
 
     constructor(options: WebRtcTestSessionOptions) {
         this.transfer = options.transfer;
@@ -42,6 +65,10 @@ export class WebRtcTestSession {
         this.sendSignal = options.sendSignal;
         this.onStateChange = options.onStateChange;
         this.onDataChannel = options.onDataChannel;
+        this.signingKey = options.signingKey;
+        this.peerSigningPublicKey = options.peerSigningPublicKey;
+        this.accountEpoch = options.accountEpoch;
+        this.onHandshake = options.onHandshake;
         const createPeerConnection =
             options.peerConnectionFactory ??
             ((configuration) => new RTCPeerConnection(configuration));
@@ -79,12 +106,37 @@ export class WebRtcTestSession {
         return this.stateValue;
     }
 
+    get material(): DerivedHandshakeMaterial | null {
+        return this.materialValue;
+    }
+
     async start(): Promise<void> {
         if (this.started || this.stateValue === 'closed') {
             return;
         }
         this.started = true;
         this.setState('negotiating');
+        if (this.role !== 'sender') {
+            return;
+        }
+
+        if (!this.signingKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
+            throw new Error('Authenticated handshake material is required.');
+        }
+        const offer = await createHandshakeOffer({
+            transferId: this.transfer.transfer_id,
+            accountEpoch: this.accountEpoch,
+            senderDeviceId: this.transfer.sender_device_id,
+            recipientDeviceId: this.transfer.recipient_device_id,
+            expiresAt: new Date(this.transfer.expires_at).getTime(),
+            signingKey: this.signingKey,
+        });
+        this.handshakeOffer = offer;
+        this.handshakeEphemeralPrivateKey = offer.ephemeralKeyPair.privateKey;
+        await this.emitSignal(buildHandshakeOfferEnvelope(this.transfer, offer));
+    }
+
+    private async startNegotiation(): Promise<void> {
         if (this.role !== 'sender') {
             return;
         }
@@ -113,6 +165,58 @@ export class WebRtcTestSession {
         }
         if (message.type === 'ice_candidate') {
             await this.handleIceCandidate(message);
+            return true;
+        }
+        if (message.type === 'handshake_offer') {
+            if (this.role !== 'recipient' || !this.signingKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
+                return false;
+            }
+            const offer = await assertValidHandshakeOffer(message.handshake, this.peerSigningPublicKey, {
+                transferId: this.transfer.transfer_id,
+                accountEpoch: this.accountEpoch,
+                senderDeviceId: this.transfer.sender_device_id,
+                recipientDeviceId: this.transfer.recipient_device_id,
+            });
+            const answer = await createHandshakeAnswer({
+                transferId: this.transfer.transfer_id,
+                accountEpoch: this.accountEpoch,
+                senderDeviceId: this.transfer.sender_device_id,
+                recipientDeviceId: this.transfer.recipient_device_id,
+                offer: message.handshake,
+                expiresAt: offer.expires_at,
+                signingKey: this.signingKey,
+            });
+            this.materialValue = await deriveHandshakeMaterial({
+                offer,
+                answer: answer.core,
+                localEphemeralPrivateKey: answer.ephemeralKeyPair.privateKey,
+                remoteEphemeralSpki: decodeBase64Url(offer.sender_ephemeral_spki, 1024),
+                role: 'recipient',
+            });
+            this.onHandshake?.(this.materialValue);
+            await this.emitSignal(buildHandshakeAnswerEnvelope(this.transfer, answer));
+            return true;
+        }
+        if (message.type === 'handshake_answer') {
+            if (this.role !== 'sender' || !this.handshakeOffer || !this.handshakeEphemeralPrivateKey || !this.peerSigningPublicKey || this.accountEpoch === undefined) {
+                return false;
+            }
+            const answer = await assertValidHandshakeAnswer(message.handshake, this.peerSigningPublicKey, {
+                offer: this.handshakeOffer,
+                transferId: this.transfer.transfer_id,
+                accountEpoch: this.accountEpoch,
+                senderDeviceId: this.transfer.sender_device_id,
+                recipientDeviceId: this.transfer.recipient_device_id,
+            });
+            this.materialValue = await deriveHandshakeMaterial({
+                offer: this.handshakeOffer.core,
+                answer,
+                localEphemeralPrivateKey: this.handshakeEphemeralPrivateKey,
+                remoteEphemeralSpki: decodeBase64Url(answer.recipient_ephemeral_spki, 1024),
+                role: 'sender',
+            });
+            this.onHandshake?.(this.materialValue);
+            await this.startNegotiation();
             return true;
         }
         this.started = true;
