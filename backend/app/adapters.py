@@ -75,6 +75,14 @@ class TurnCredentialProviderError(RuntimeError):
     """Raised when a TURN provider cannot issue usable credentials."""
 
 
+class DisabledTurnCredentialProvider:
+    """Fail closed when production TURN usage is intentionally disabled."""
+
+    async def issue_credentials(self, request: TurnCredentialRequest) -> TurnCredentials:
+        del request
+        raise TurnCredentialProviderError("TURN is disabled")
+
+
 _CLOUDFLARE_TURN_CREDENTIALS_URL = (
     "https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers"
 )
@@ -260,6 +268,8 @@ def create_turn_credential_provider(
 
     if adapter == "fake":
         return FakeTurnCredentialProvider(app_env=app_env)
+    if adapter == "disabled":
+        return DisabledTurnCredentialProvider()
     if adapter == "cloudflare":
         if turn_key_id is None or api_token is None:
             raise ConfigurationError(

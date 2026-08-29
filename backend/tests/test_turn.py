@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.adapters import (
+    DisabledTurnCredentialProvider,
     FakeTurnCredentialProvider,
     TurnCredentialProviderError,
     TurnCredentialRequest,
@@ -32,8 +33,8 @@ from app.turn import (
 APP_ORIGIN = "http://localhost:5173"
 
 
-def _environment() -> dict[str, str]:
-    return {
+def _environment(**overrides: str) -> dict[str, str]:
+    values = {
         "APP_ENV": "test",
         "APP_ORIGIN": APP_ORIGIN,
         "API_ORIGIN": "http://localhost:8000",
@@ -42,6 +43,8 @@ def _environment() -> dict[str, str]:
         "AUTH_ADAPTER": "fake",
         "TURN_ADAPTER": "fake",
     }
+    values.update(overrides)
+    return values
 
 
 class FakeDatabase:
@@ -58,6 +61,15 @@ class FakeDatabase:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     settings = load_settings(_environment())
+    monkeypatch.setattr(main, "load_settings", lambda: settings)
+    monkeypatch.setattr(main, "Database", FakeDatabase)
+    with TestClient(main.app, base_url="https://localhost:8000") as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def disabled_turn_client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    settings = load_settings(_environment(TURN_ADAPTER="disabled"))
     monkeypatch.setattr(main, "load_settings", lambda: settings)
     monkeypatch.setattr(main, "Database", FakeDatabase)
     with TestClient(main.app, base_url="https://localhost:8000") as test_client:
@@ -255,3 +267,20 @@ def test_turn_provider_outage_returns_a_terminal_error_without_provider_detail(
     assert response.status_code == 503
     assert response.json() == {"detail": TURN_PROVIDER_UNAVAILABLE_MESSAGE}
     assert "cf-secret-token" not in response.text
+
+
+def test_disabled_turn_adapter_returns_generic_provider_unavailable_response(
+    disabled_turn_client: TestClient,
+) -> None:
+    account_id = uuid4()
+    sender = _create_device(disabled_turn_client, account_id)
+    recipient = _create_device(disabled_turn_client, account_id)
+    session = _issue_session(disabled_turn_client, account_id, sender.id)
+    transfer_id = _create_transfer(account_id, sender.id, recipient.id, accepted=True)
+
+    assert isinstance(main.app.state.turn_credential_provider, DisabledTurnCredentialProvider)
+
+    response = _issue(disabled_turn_client, transfer_id, session.csrf_secret)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": TURN_PROVIDER_UNAVAILABLE_MESSAGE}

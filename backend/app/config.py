@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 AppEnvironment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 AuthAdapter = Literal["supabase", "fake"]
-TurnAdapter = Literal["cloudflare", "fake"]
+TurnAdapter = Literal["cloudflare", "fake", "disabled"]
 
 _DEFAULT_APP_ENV: Final[AppEnvironment] = "development"
 _DEFAULT_LOG_LEVEL: Final[LogLevel] = "INFO"
@@ -22,7 +22,7 @@ _DEFAULT_RATE_LIMIT_SECRET: Final[str] = "local-development-rate-limit-secret"
 _APP_ENVIRONMENTS: Final[frozenset[str]] = frozenset({"development", "test", "production"})
 _LOG_LEVELS: Final[frozenset[str]] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _AUTH_ADAPTERS: Final[frozenset[str]] = frozenset({"supabase", "fake"})
-_TURN_ADAPTERS: Final[frozenset[str]] = frozenset({"cloudflare", "fake"})
+_TURN_ADAPTERS: Final[frozenset[str]] = frozenset({"cloudflare", "fake", "disabled"})
 
 
 class ConfigurationError(ValueError):

@@ -113,6 +113,20 @@ def test_real_adapters_are_allowed_in_production() -> None:
     assert settings.cloudflare_turn_api_token == "turn-api-token"
 
 
+def test_disabled_turn_adapter_is_allowed_in_production_without_turn_secrets() -> None:
+    settings = load_settings(
+        _environment(
+            APP_ENV="production",
+            AUTH_ADAPTER="supabase",
+            TURN_ADAPTER="disabled",
+        )
+    )
+
+    assert settings.turn_adapter == "disabled"
+    assert settings.cloudflare_turn_key_id is None
+    assert settings.cloudflare_turn_api_token is None
+
+
 @pytest.mark.parametrize("name", ["CLOUDFLARE_TURN_KEY_ID", "CLOUDFLARE_TURN_API_TOKEN"])
 def test_cloudflare_turn_adapter_requires_server_credentials(name: str) -> None:
     provided = {
