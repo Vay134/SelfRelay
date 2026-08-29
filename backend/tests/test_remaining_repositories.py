@@ -115,6 +115,22 @@ def test_transfer_creation_and_transition_are_owned_and_parameterized() -> None:
     asyncio.run(exercise())
 
 
+def test_transfer_list_qualifies_columns_shared_with_account() -> None:
+    async def exercise() -> None:
+        account_id = uuid4()
+        database = RecordingDatabase([[]])
+        repository = TransferRequestRepository(database)
+
+        assert await repository.list_for_account(account_id) == []
+
+        query, parameters = database.calls[0]
+        assert "transfer.id," in query
+        assert "transfer.created_at" in query
+        assert parameters == (account_id,)
+
+    asyncio.run(exercise())
+
+
 def test_transfer_rejects_invalid_state_transition_without_querying() -> None:
     async def exercise() -> None:
         database = RecordingDatabase([])

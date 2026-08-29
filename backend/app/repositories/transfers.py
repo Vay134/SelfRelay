@@ -26,6 +26,21 @@ _TRANSFER_REQUEST_COLUMNS = """
     relay_used
 """
 
+_TRANSFER_SELECT_COLUMNS = """
+    transfer.id,
+    transfer.user_id,
+    transfer.sender_device_id,
+    transfer.recipient_device_id,
+    transfer.protocol_version,
+    transfer.status,
+    transfer.created_at,
+    transfer.expires_at,
+    transfer.accepted_at,
+    transfer.completed_at,
+    transfer.failure_code,
+    transfer.relay_used
+"""
+
 _ACTIVE_STATUSES = (
     "offered",
     "accepted",
@@ -68,7 +83,7 @@ class TransferRequestRepository:
         """Return one transfer only when it belongs to an active account."""
 
         rows = await self._database.fetch(
-            f"""SELECT {_TRANSFER_REQUEST_COLUMNS}
+            f"""SELECT {_TRANSFER_SELECT_COLUMNS}
             FROM private.transfer_requests AS transfer
             JOIN private.app_users AS account ON account.id = transfer.user_id
             WHERE transfer.user_id = $1
@@ -84,7 +99,7 @@ class TransferRequestRepository:
         """Return an account's transfer records, newest first."""
 
         rows = await self._database.fetch(
-            f"""SELECT {_TRANSFER_REQUEST_COLUMNS}
+            f"""SELECT {_TRANSFER_SELECT_COLUMNS}
             FROM private.transfer_requests AS transfer
             JOIN private.app_users AS account ON account.id = transfer.user_id
             WHERE transfer.user_id = $1
@@ -102,7 +117,7 @@ class TransferRequestRepository:
         """Return transfers involving one account-owned device."""
 
         rows = await self._database.fetch(
-            f"""SELECT {_TRANSFER_REQUEST_COLUMNS}
+            f"""SELECT {_TRANSFER_SELECT_COLUMNS}
             FROM private.transfer_requests AS transfer
             JOIN private.app_users AS account ON account.id = transfer.user_id
             WHERE transfer.user_id = $1
