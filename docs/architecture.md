@@ -22,18 +22,20 @@ flowchart TB
 
     subgraph Managed services
         CF[Cloudflare Pages]
-        API[FastAPI on Koyeb Free]
+        GW[Pages Function gateway]
+        API[FastAPI on Cloud Run]
         PG[Supabase PostgreSQL]
         AUTH[Supabase Auth]
         TURN[Cloudflare TURN]
-        SMTP[SMTP provider]
+        SMTP[Brevo SMTP]
         OP[Provider-neutral availability probe<br/>Cloudflare Worker Cron]
     end
 
     CF --> UIA
     CF --> UIB
-    UIA <-->|HTTP wake/readiness, then WSS| API
-    UIB <-->|HTTP wake/readiness, then WSS| API
+    UIA <-->|Same-origin HTTP and WSS| GW
+    UIB <-->|Same-origin HTTP and WSS| GW
+    GW <-->|Proxied HTTP and WebSocket| API
     OP -->|Authenticated end-to-end probe| API
     API <-->|SQL| PG
     API <-->|OTP start and verify| AUTH
@@ -74,7 +76,7 @@ FastAPI does not accept file uploads. A route that could receive an arbitrary fi
 
 Availability is a separate frontend wrapper in `frontend/src/availability/`, backend package/router in `backend/app/availability/`, and provider-neutral operations probe in `ops/availability-probe/`. The frontend wrapper makes a bounded HTTP wake/readiness request before handing control to the existing presence/WebSocket client. It exposes bounded states and capped retries with backoff and jitter, but does not duplicate the presence client's reconnect loop.
 
-The backend package exposes only minimal wake, readiness, and authenticated probe surfaces. Its database connectivity check has a short timeout and returns a safe status without database details, secrets, or other sensitive diagnostics. The operations probe is deployed separately, initially with Cloudflare Worker Cron three times per day by default, with a configurable schedule, and performs a low-frequency authenticated end-to-end check that reaches the database. Probe credentials live only in host secret stores. These modules are composed and wired at application boundaries with the existing control-plane modules without changing their contracts; no Koyeb-specific branches enter existing presence, transfer, or protocol modules.
+The backend package exposes only minimal wake, readiness, and authenticated probe surfaces. Its database connectivity check has a short timeout and returns a safe status without database details, secrets, or other sensitive diagnostics. The operations probe is deployed separately, initially with Cloudflare Worker Cron three times per day by default, with a configurable schedule, and performs a low-frequency authenticated end-to-end check that reaches the database. Probe credentials live only in host secret stores. These modules are composed and wired at application boundaries with the existing control-plane modules without changing their contracts; no hosting-provider branches enter existing presence, transfer, or protocol modules.
 
 ### Supabase
 
@@ -84,7 +86,7 @@ FastAPI connects with a dedicated database role limited to the tables and operat
 
 ### Cloudflare Pages
 
-Pages hosts the static Vite build. It does not run the application API. Static hosting should set the Content Security Policy and the other browser security headers described in [deployment.md](deployment.md).
+Pages hosts the static Vite build at its assigned `pages.dev` hostname and sets the browser security headers described in [deployment.md](deployment.md). A narrowly scoped Pages Function gateway forwards API and WebSocket traffic to Cloud Run. The gateway keeps the browser on the Pages origin for host-only cookies but does not own application authorization or accept file data.
 
 ### Cloudflare TURN
 
@@ -92,19 +94,16 @@ TURN is a fallback relay for WebRTC. FastAPI obtains or creates time-limited cre
 
 ### SMTP provider
 
-Supabase Auth calls a configured SMTP service. Application code does not contain a Resend dependency. The public deployment stays disabled for arbitrary email recipients until a sending domain passes SPF and DKIM verification.
+Supabase Auth calls Brevo through custom SMTP. Application code does not contain a Brevo dependency. Version 1 verifies an individual sender address instead of authenticating an owned domain, so Brevo may replace the visible sender with a provider-managed transactional address. External-recipient delivery remains a Phase 11 release check.
 
-## Public hostnames
+## Public URLs
 
-The placeholders below will be replaced after `is-a.dev` approval.
-
-| Host | Purpose |
+| URL | Purpose |
 | --- | --- |
-| `PROJECT.is-a.dev` | React application |
-| `api.PROJECT.is-a.dev` | FastAPI HTTPS and WSS |
-| `auth.PROJECT.is-a.dev` | Transactional email sender domain |
+| `https://<pages-project>.pages.dev` | React application plus the browser-facing API and WebSocket gateway |
+| Cloud Run's assigned `https://*.run.app` URL | FastAPI upstream and authenticated operations probe target |
 
-The frontend and API are separate origins but the same site. FastAPI must allow only the exact production and development frontend origins. The session cookie stays host-only to the API rather than using a broad domain cookie.
+The browser does not call the Cloud Run origin directly. HTTP and WebSocket requests enter through the Pages origin, allowing the session cookie to remain `Secure`, `HttpOnly`, `SameSite=Lax`, host-only, and scoped to `/`. FastAPI still validates the exact Pages `Origin`; the gateway is transport glue rather than an authorization boundary.
 
 ## Authentication boundary
 
@@ -154,13 +153,13 @@ The generic offer does not contain a file name, MIME type, or size. The receiver
 
 ## Availability and scaling
 
-Version 1 runs one Koyeb Free FastAPI instance in Frankfurt, with one Uvicorn worker, 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk. It automatically scales to zero after one idle hour, a Free behavior that cannot be disabled, and has no custom scaling, persistent volume, or production SLA. In-memory presence is acceptable only as a cache; authoritative sessions, devices, offers, and pairing records live in PostgreSQL. A process restart or cold start disconnects WebSockets and cancels active negotiations, but the availability wrapper wakes the API first and the existing presence client can reconnect and begin a new transfer.
+Version 1 runs a Cloud Run service in `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and one Uvicorn worker. The service scales to zero when idle and uses a disposable container filesystem. In-memory presence is acceptable only as a cache; authoritative sessions, devices, offers, and pairing records live in PostgreSQL. A process restart or cold start disconnects WebSockets and cancels active negotiations, but the availability wrapper wakes the API first and the existing presence client can reconnect and begin a new transfer.
 
-Running more than one backend instance would require shared presence and signaling fanout, such as Redis or another pub/sub system. That work is deferred until the single instance becomes a measured limit. The Koyeb [instance limits](https://www.koyeb.com/docs/reference/instances) and [scale-to-zero behavior](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) are deployment constraints, not reliability guarantees.
+Running more than one backend instance would require shared presence and signaling fanout, such as Redis or another pub/sub system. That work is deferred until the single instance becomes a measured limit. Cloud Run WebSockets are HTTP requests subject to the configured timeout, which is 60 minutes for version 1; clients must reconnect after timeouts and platform interruptions. Deployments avoid traffic splitting because an old revision may continue serving an existing socket while a new revision receives new requests.
 
-Supabase Free may pause after low activity. The scheduled authenticated operations probe supplies regular genuine database activity and reports failures, but it does not guarantee that Supabase will never pause; pause warnings and the restore runbook still require monitoring. The UI should report backend unavailability plainly, reach a bounded failed state, and never present a transfer as pending forever. Paid Koyeb Eco Micro in Singapore is an upgrade path if the Free instance's limits become unsuitable, not the current deployment choice.
+Supabase Free may pause after low activity. The scheduled authenticated operations probe supplies regular genuine database activity and reports failures, but it does not guarantee that Supabase will never pause; pause warnings and the restore runbook still require monitoring. The UI should report backend unavailability plainly, reach a bounded failed state, and never present a transfer as pending forever.
 
-## Planned repository layout
+## Repository layout
 
 ```text
 frontend/

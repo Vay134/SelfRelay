@@ -2,9 +2,9 @@
 
 This project is a browser-based file transfer application for moving a file between two devices on the same account. The sender encrypts the file in the browser and sends it over a WebRTC data channel. The application server handles accounts, devices, presence, signaling, and short-lived TURN credentials. It does not receive or store the file.
 
-The repository is still in the design stage. The protocol and security assumptions are documented before implementation so they can be tested against the code later.
+The repository contains a locally validated implementation through the hosting-availability work. Public deployment and external-service verification are in progress in Phase 11.
 
-## Planned v1
+## Version 1 scope
 
 - Passwordless account bootstrap and recovery through a Supabase email OTP
 - Persistent, revocable application sessions stored in secure cookies
@@ -27,8 +27,9 @@ The web host is trusted because it supplies the JavaScript that performs the cry
 ```mermaid
 flowchart LR
     A[Sender browser] <-->|Encrypted WebRTC data| B[Receiver browser]
-    A <-->|HTTP wake/readiness, then WSS| API[FastAPI on Koyeb Free]
-    B <-->|HTTP wake/readiness, then WSS| API
+    A <-->|Same-origin HTTP and WSS| G[Cloudflare Pages gateway]
+    B <-->|Same-origin HTTP and WSS| G
+    G <-->|Proxied control traffic| API[FastAPI on Google Cloud Run]
     API <-->|Auth and SQL| DB[Supabase]
     A -.->|Relay when needed| TURN[Cloudflare TURN]
     B -.->|Relay when needed| TURN
@@ -38,7 +39,7 @@ flowchart LR
 
 The backend is a browser-facing API rather than a file proxy. File throughput normally depends on the peers' connection. If WebRTC falls back to TURN, Cloudflare relays the encrypted packets.
 
-Production uses one Koyeb Free backend instance in Frankfurt. It can scale to zero after one idle hour, so a separate availability layer wakes the API over HTTP before handing control to the existing presence/WebSocket client. Supabase remains the durable state store, and a separately deployed authenticated probe supplies regular genuine database activity while pause warnings are still monitored. Paid Koyeb Eco Micro in Singapore is the upgrade path if the free instance becomes unsuitable.
+Production uses a Google Cloud Run service in Singapore with zero minimum instances, one maximum instance, and one Uvicorn worker. A separate availability layer wakes the API over HTTP before handing control to the existing presence/WebSocket client. The Cloudflare Pages origin proxies browser API and WebSocket traffic to Cloud Run so the secure host-only session cookie remains same-origin. Supabase remains the durable state store, and a separately deployed authenticated probe supplies regular genuine database activity while pause warnings are still monitored.
 
 ## Stack
 
@@ -51,10 +52,10 @@ Production uses one Koyeb Free backend instance in Frankfurt. It can scale to ze
 | Database and identity proof | Supabase PostgreSQL and Auth |
 | TURN | Cloudflare Realtime TURN |
 | Frontend hosting | Cloudflare Pages |
-| Backend hosting | Koyeb Free, one instance in Frankfurt |
+| Backend hosting | Google Cloud Run, one maximum instance in Singapore |
 | Availability | Separate frontend/backend availability modules and a scheduled provider-neutral probe |
-| Public hostname | An `is-a.dev` subdomain, subject to approval |
-| Auth email | Provider-neutral SMTP; Resend is the first provider to test |
+| Public hostname | Cloudflare Pages `pages.dev` hostname |
+| Auth email | Brevo custom SMTP through Supabase Auth |
 
 ## Documentation
 
@@ -76,13 +77,14 @@ Production uses one Koyeb Free backend instance in Frankfurt. It can scale to ze
 - [x] Technology and hosting choices agreed
 - [x] Authentication and cryptographic design documented
 - [x] Application scaffold
-- [ ] Authentication and device management
-- [ ] Signaling and WebRTC transport
-- [ ] Encrypted file transfer
-- [ ] Public deployment and email verification
+- [x] Authentication and device management
+- [x] Signaling and WebRTC transport
+- [x] Encrypted file transfer
+- [x] Hosting availability modules
+- [ ] Public Cloud Run deployment and Brevo email verification
 - [ ] Security testing and release documentation
 
-Production setup instructions will be added in the deployment phase. No production secrets belong in this repository.
+Production setup and remaining release checks are tracked in [the deployment guide](docs/deployment.md). No production secrets belong in this repository.
 
 ## Local development
 

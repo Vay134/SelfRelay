@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines version 1 before implementation. A change to a locked requirement should also update the architecture, threat model, protocol, tests, and decision log when those documents are affected.
+This document defines the locked version 1 requirements. Implementation through Phase 10 is complete, and hosted deployment work is in progress in Phase 11. A requirement change should also update the architecture, threat model, protocol, tests, and decision log when those documents are affected.
 
 ## Problem
 

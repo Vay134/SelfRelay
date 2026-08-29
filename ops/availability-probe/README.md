@@ -25,17 +25,19 @@ npx wrangler secret put AVAILABILITY_PROBE_TOKEN
 npx wrangler deploy --var AVAILABILITY_PROBE_URL:https://api.example.invalid/availability/probe
 ```
 
-Replace the example URL with the Koyeb HTTPS endpoint. `AVAILABILITY_PROBE_URL`
+Replace the example URL with the Cloud Run service's assigned HTTPS endpoint.
+`AVAILABILITY_PROBE_URL`
 is a non-secret Worker variable and may instead be configured in the Wrangler
 dashboard or deployment pipeline. `AVAILABILITY_PROBE_TOKEN` must be entered
 through the scheduler's secret store; never add it to `wrangler.toml`, a local
 source file, a frontend `VITE_*` variable, a command committed to a script, or
 an application log.
 
-Configure the same token value as `AVAILABILITY_PROBE_TOKEN` in the Koyeb
-backend secret store. The backend and Worker must use the same value, but the
-value belongs only in those two host-managed secret stores. Rotate both stores
-together and deploy the Worker after rotation.
+Configure the same token value as `AVAILABILITY_PROBE_TOKEN` in Google Secret
+Manager and expose that secret only to the Cloud Run service's dedicated
+identity. The backend and Worker must use the same value, but the value belongs
+only in those two host-managed secret stores. Rotate both stores together and
+deploy the Cloud Run revision and Worker after rotation.
 
 For a local scheduled invocation, put development-only values in Wrangler's
 ignored `.dev.vars` file or pass them through the local environment. Do not

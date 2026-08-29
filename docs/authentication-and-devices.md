@@ -81,7 +81,7 @@ FastAPI rotates the session after email verification, device enrollment, and rec
 
 ## CSRF and CORS
 
-The frontend and API use different origins. Browser requests include credentials, and FastAPI allows only explicit frontend origins. Wildcard origins are forbidden with credentialed requests.
+Production browser traffic uses the Cloudflare Pages origin for both the frontend and the browser-facing API. A Pages Function gateway forwards the requests and WebSocket upgrades to Cloud Run. FastAPI still allows only the exact production Pages origin and explicit development origins; wildcard origins are forbidden with credentialed requests.
 
 Unsafe requests require an exact allowed `Origin` header and a session-bound CSRF token in a custom header. The CSRF value is not the session identifier. Login and recovery endpoints use strict rate limits and Origin checks even before a session exists.
 
@@ -109,11 +109,10 @@ FastAPI exposes an `AuthGateway` interface for OTP start and verification. The p
 
 The fake is available only under an explicit test environment. Production startup fails if it is selected. Tests may inspect an OTP through the fake object, but no HTTP response or application log returns an OTP.
 
-Supabase talks to the chosen SMTP provider. Resend credentials, if used, live in Supabase's protected configuration rather than FastAPI or frontend source code.
+Supabase talks to Brevo through custom SMTP. The verified sender address and Brevo SMTP credentials live in Supabase's protected configuration rather than FastAPI, Cloud Run, or frontend source code. Because version 1 has no owned sending domain, Brevo may replace the visible sender with a provider-managed transactional address; this affects presentation and deliverability, not OTP verification semantics.
 
 ## Abuse controls
 
 Limits are configured separately for email address, account, IP address, session, and device where those identifiers exist. Initial values should be conservative and adjusted from observed false positives.
 
 At minimum, controls cover OTP requests and attempts, pairing creation and guesses, device challenges, session creation, WebSocket tickets, device revocation, and recovery. Repeated failures create a security event and may trigger a temporary cooldown. Responses stay generic so the control does not become an account-enumeration oracle.
-

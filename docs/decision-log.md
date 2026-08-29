@@ -26,9 +26,9 @@ Supabase is not the application session store exposed to the browser. This avoid
 
 Status: accepted
 
-Application code talks to Supabase Auth rather than Resend. Supabase sends OTP email through a configured SMTP provider. Tests replace the Supabase boundary with a fake; production refuses to start with that fake enabled.
+Application code talks to Supabase Auth rather than directly to an email vendor. Supabase sends OTP email through Brevo custom SMTP. Tests replace the Supabase boundary with a fake; production refuses to start with that fake enabled.
 
-Resend is the first SMTP provider to test. Its acceptance of an `is-a.dev` sending domain is unresolved. A different SMTP service or a purchased domain must not require changes to the application protocol.
+Brevo was selected because it can verify an individual sender and deliver to external recipients without an owned domain. Brevo may replace a free sender address with a provider-managed transactional address, so the Phase 11 release check records sender presentation and delivery to unrelated providers. A later custom domain or SMTP provider change must not require changes to the application protocol.
 
 ## D005: trusted-device login
 
@@ -66,17 +66,17 @@ Version 1 has no offline inbox and does not use Supabase Storage. This reduces s
 
 Status: accepted
 
-Cloudflare Pages hosts the static frontend. Koyeb runs one Free FastAPI instance in Frankfurt, with one Uvicorn worker, 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk. The instance automatically scales to zero after one idle hour, a Free behavior that cannot be disabled; custom scaling and persistent volumes are not used, and the deployment has no production SLA. [Koyeb instance reference](https://www.koyeb.com/docs/reference/instances), [scale-to-zero documentation](https://www.koyeb.com/docs/run-and-scale/scale-to-zero)
+Cloudflare Pages hosts the static frontend and a narrowly scoped same-origin gateway. Google Cloud Run hosts FastAPI in `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, one Uvicorn worker, and a 60-minute request timeout. The container filesystem is disposable. The one-instance limit preserves the current in-memory presence design and bounds cost, but it also limits availability and throughput. [Cloud Run overview](https://cloud.google.com/run/docs/overview/what-is-cloud-run), [Cloud Run WebSockets](https://cloud.google.com/run/docs/triggering/websockets)
 
-Supabase Free hosts Auth and PostgreSQL. Cloudflare provides managed TURN. Separate availability modules under `frontend/src/availability/`, `backend/app/availability/`, and `ops/availability-probe/` wake the backend over HTTP before handing control to the existing presence/WebSocket client and run a configurable authenticated probe three times per day by default to supply regular genuine database activity through a scheduled deployment. The probe does not guarantee that Supabase will never pause, so pause warnings and restoration remain operational responsibilities. These modules are composed and wired at application boundaries; no Koyeb-specific branches enter existing presence, transfer, or protocol modules. This configuration meets the small-scale deployment requirement but provides no high-availability guarantee and is unsuitable for a critical service. Paid Koyeb Eco Micro in Singapore is the upgrade path if the Free instance becomes unsuitable, not the current choice.
+Supabase Free hosts Auth and PostgreSQL. Cloudflare provides managed TURN. Separate availability modules under `frontend/src/availability/`, `backend/app/availability/`, and `ops/availability-probe/` wake the backend over HTTP before handing control to the existing presence/WebSocket client and run a configurable authenticated probe three times per day by default to supply regular genuine database activity through a scheduled deployment. The probe does not guarantee that Supabase will never pause, so pause warnings and restoration remain operational responsibilities. These modules are composed and wired at application boundaries; no hosting-provider branches enter existing presence, transfer, or protocol modules. This configuration meets the small-scale deployment requirement but provides no high-availability guarantee and is unsuitable for a critical service.
 
-## D011: free project hostname
+## D011: provider-assigned public URLs
 
-Status: accepted with a pending test
+Status: accepted
 
-The first public hostname will use `is-a.dev` if the registration is approved. The planned layout is a project root for the frontend, an `api` subdomain for FastAPI, and an `auth` subdomain for email sending.
+Version 1 uses the Cloudflare Pages `pages.dev` hostname as the public browser origin and Cloud Run's assigned `run.app` URL as the backend upstream. It does not require a purchased or community-managed domain.
 
-The account does not own the parent zone. DNS changes depend on community review, and Resend states that sending domains must not be shared or public. Domain verification therefore remains a release gate. A purchased domain is the fallback.
+Because a direct `pages.dev` to `run.app` browser call would make the host-only session cookie cross-site, a narrowly scoped Pages Function proxies HTTP and WebSocket control traffic to Cloud Run. The browser uses one Pages origin; FastAPI still performs authentication, authorization, exact Origin checks, CSRF protection, and rate limiting. A future custom domain must preserve this same-origin property or deliberately redesign the cookie boundary.
 
 ## D012: version 1 recovery policy
 

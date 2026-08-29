@@ -22,8 +22,8 @@ This claim assumes that the web host serves the documented client code. It does 
 The following systems are trusted for version 1:
 
 - the sender and receiver operating systems and browsers
-- the JavaScript distributed through the configured frontend host
-- FastAPI authorization and the device public-key directory
+- the JavaScript and same-origin gateway distributed through Cloudflare Pages
+- FastAPI on Cloud Run, including authorization and the device public-key directory
 - Supabase Auth as proof of email control
 - the user's email account during bootstrap and recovery
 - Supabase PostgreSQL for integrity and availability of application records
@@ -94,7 +94,7 @@ The backend applies separate limits to OTP requests, challenge issuance, pairing
 
 Message bodies have small fixed limits. WebSocket queues are bounded, stale offers expire after 10 minutes, and an inactive socket is closed after missed heartbeats. A user cannot obtain TURN credentials for an unaccepted or cross-account transfer.
 
-Cloudflare protects the static frontend. The `is-a.dev` arrangement does not give the project owner control of the parent Cloudflare zone, so project-specific WAF rules for the API cannot be assumed. FastAPI and Koyeb remain responsible for API-level abuse controls until the project uses a domain whose DNS zone the owner controls.
+Cloudflare protects the public Pages origin and its narrowly scoped gateway. The Cloud Run `run.app` upstream remains Internet reachable for the gateway and authenticated operations probe, so an attacker can bypass the Pages edge and call it directly. FastAPI and Cloud Run therefore retain API-level authentication, exact Origin checks, CSRF controls, bounded inputs, rate limits, and one-instance capacity limits. The maximum-instance setting bounds scale and cost exposure but can make saturation easier; it is not treated as denial-of-service protection.
 
 ## Privacy limits
 
@@ -122,4 +122,3 @@ The design does not hide account relationships, online presence, or traffic patt
 ## Review triggers
 
 Review this threat model before adding cross-account sharing, offline storage, resumable transfers, previews, native clients, MFA, organization accounts, background operation, or more than one backend instance. Each feature changes at least one trust boundary.
-

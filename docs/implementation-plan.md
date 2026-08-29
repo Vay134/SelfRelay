@@ -226,8 +226,8 @@ Work:
 - create a backend availability package/router with minimal public wake, readiness, and probe surfaces
 - keep the backend database connectivity probe bounded by a short timeout and return only a safe status, never database details or service diagnostics
 - create a provider-neutral operations availability probe/deployment package, initially scheduled with Cloudflare Worker Cron three times per day by default and configurable for operations needs, that authenticates and exercises the end-to-end path so Supabase Free receives genuine database activity
-- keep probe credentials in the Koyeb and scheduler secret stores; never place them in source, frontend configuration, logs, or user-visible errors
-- compose and wire these modules only at the application boundaries with the existing Phase 0 through 6 modules later; the availability layer wakes the backend and delegates reconnection to the presence client rather than duplicating its reconnect loop, and no Koyeb-specific branches enter existing presence, transfer, or protocol modules
+- keep probe credentials in the backend host and scheduler secret stores; never place them in source, frontend configuration, logs, or user-visible errors
+- compose and wire these modules only at the application boundaries with the existing Phase 0 through 6 modules later; the availability layer wakes the backend and delegates reconnection to the presence client rather than duplicating its reconnect loop, and no hosting-provider branches enter existing presence, transfer, or protocol modules
 - add unit and integration tests for state transitions, retry caps, jitter bounds, probe authentication, database timeouts, safe diagnostics, and terminal failure behavior
 
 Exit criteria:
@@ -242,31 +242,39 @@ Exit criteria:
 
 Deploy the same tested artifacts and complete the manual service checks.
 
+Status: in progress.
+
 Work:
 
-- deploy the frontend to Cloudflare Pages
-- deploy one Uvicorn worker in the pinned image to one Koyeb Free Instance in Frankfurt, using 512 MB RAM, 0.1 vCPU, and 2 GB of ephemeral disk; verify and accept its automatic one-hour idle scale-to-zero behavior, which cannot be disabled on Free, with no custom scaling, persistent volume, or production SLA ([instance reference](https://www.koyeb.com/docs/reference/instances), [scale-to-zero documentation](https://www.koyeb.com/docs/run-and-scale/scale-to-zero))
-- keep durable sessions, devices, offers, pairing records, and other authoritative state in Supabase; treat the Koyeb filesystem as disposable
+- deploy the frontend to its Cloudflare Pages `pages.dev` hostname
+- create a dedicated `ops/cloud-run/` deployment module for the container, service settings, and deployment instructions instead of adding Google-specific branches to application modules
+- create a narrowly scoped Pages Function gateway under the frontend deployment boundary that proxies only the required HTTP and WebSocket routes to Cloud Run; keep browser traffic on the Pages origin so the host-only `SameSite=Lax` session cookie remains first-party
+- set the production `VITE_API_ORIGIN` to the Pages origin and reduce the production CSP `connect-src` to `'self'` after the gateway is in place
+- deploy one Uvicorn worker in the pinned image to Google Cloud Run region `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and a 60-minute request timeout; keep HTTP/2 end-to-end disabled for WebSocket support and configure a billing budget and alerts ([Cloud Run overview](https://cloud.google.com/run/docs/overview/what-is-cloud-run), [WebSocket guidance](https://cloud.google.com/run/docs/triggering/websockets))
+- keep durable sessions, devices, offers, pairing records, and other authoritative state in Supabase; treat the Cloud Run filesystem as disposable
 - create the hosted Supabase project and apply migrations
-- request the `is-a.dev` records for frontend and API
-- test the Resend sending subdomain and submit its DNS records
-- configure Supabase custom SMTP only after domain verification
+- verify an individual sender address in Brevo and create a dedicated SMTP key
+- configure Supabase custom SMTP with Brevo's SMTP relay, port `587`, SMTP login, SMTP key, verified sender address, and sender name `SelfRelay`
+- test the displayed Brevo sender identity and OTP delivery to external Gmail and Outlook recipients; accept and document any provider-managed sender replacement caused by not owning a domain
 - configure production secrets, origins, cookies, health checks, and monitoring
+- store Cloud Run secrets in Google Secret Manager under a dedicated service account; keep Brevo credentials only in Supabase and gateway secrets only in Cloudflare
 - deploy the separate availability probe from Phase 10 with the intended provider-neutral package under `ops/availability-probe/` and a configurable Cloudflare Worker Cron schedule that defaults to three runs per day; verify its authenticated database-backed check and failure visibility
-- verify that the frontend performs an HTTP wake/readiness request before WSS, and that the existing presence client reconnects cleanly after a cold start or backend restart
+- verify that the frontend performs an HTTP wake/readiness request through the Pages gateway before WSS, and that the existing presence client reconnects cleanly after a Cloud Run cold start, request timeout, deployment, or restart
 - run direct and relay transfers across separate networks
-- write the Koyeb cold-start, Supabase pause-warning and restore, key-rotation, and incident runbooks
+- write the Cloud Run cold-start and billing-alert, Supabase pause-warning and restore, key-rotation, and incident runbooks
 
 Exit criteria:
 
 - external test accounts receive and verify OTPs
 - production bundles and logs contain no secrets
-- HTTPS, cookies, CORS, CSRF, WebSocket, database grants, and TURN checks pass
-- the Koyeb Free deployment uses one Uvicorn worker with no persistent volume or custom scaling, and its HTTP-first wake/readiness and WebSocket reconnect behavior plus automatic, non-disableable one-hour idle scale-to-zero behavior are verified
+- HTTPS, same-origin gateway, cookies, CORS, CSRF, WebSocket, database grants, and TURN checks pass
+- the browser uses the Pages origin for API and WebSocket traffic; direct browser use of the Cloud Run URL is neither required nor supported
+- the Cloud Run deployment uses `asia-southeast1`, request-based billing, zero minimum instances, one maximum instance, one Uvicorn worker, a disposable filesystem, and a 60-minute request timeout; cold-start wake and WebSocket reconnect behavior are verified
+- Google, Supabase, Brevo, Cloudflare, and TURN secrets exist only in their intended host-managed secret stores
 - the scheduled probe supplies regular genuine Supabase database activity, while pause warnings remain monitored and the restore procedure is tested
 - an external user can complete a transfer without local infrastructure
 
-If `is-a.dev` or Resend verification fails, this phase switches to a purchased domain or another compatible SMTP provider. If the free-instance limits become unsuitable, paid Koyeb Eco Micro in Singapore is the upgrade path; it is not the current deployment choice. Earlier phases do not change.
+An owned domain is optional for version 1. Adding one later should improve sender recognition and email authentication without changing the application protocol. Raising Cloud Run above one instance remains blocked on shared presence and signaling fanout. Earlier phases do not change.
 
 ## Phase 12: release validation and operational documentation
 

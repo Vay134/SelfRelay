@@ -161,13 +161,13 @@ Availability tests confirm that wake/readiness and probe endpoints are rate-limi
 Some behaviors need a real environment:
 
 - OTP delivery and spam placement on two email providers
-- SPF and DKIM results in received headers
+- Brevo's displayed sender identity when using a verified personal sender without an owned domain
 - WebRTC across different home, mobile, and restrictive networks
 - relay selection when UDP is blocked
 - foreground mobile transfer behavior
 - Supabase pause and restore runbook
-- Koyeb Free cold start, one-Uvicorn-worker resource limits, and WebSocket reconnect behavior
-- HTTP-first wake/readiness before WSS
+- Cloud Run cold start, one-instance/one-Uvicorn-worker limits, 60-minute WebSocket timeout, and reconnect behavior
+- same-origin Pages gateway handling for cookies, HTTP-first wake/readiness, and WebSocket upgrades
 - the separately scheduled authenticated availability probe (three times per day by default, configurable) and its observable failure path
 - Supabase pause warnings, genuine database activity from the probe, and the restore runbook
 - log inspection after failed auth and transfer attempts
@@ -188,10 +188,11 @@ A public release requires:
 - an independent review of the threat model against the code
 - successful direct and forced-relay transfers
 - successful account bootstrap, pairing, revocation, and recovery
-- successful Koyeb Free cold-start wake, availability state handling, and presence reconnect
+- successful Cloud Run cold-start wake, availability state handling, request-timeout reconnect, and presence reconnect
+- successful same-origin Pages gateway handling for HTTP, WebSockets, cookies, Origin, and CSRF checks
 - successful authenticated database-backed availability probe with no sensitive diagnostics
 - clean log review
 - documented browser results
-- a completed email-domain test or a deliberate switch to another provider or domain
+- successful Brevo OTP delivery to external Gmail and Outlook recipients with the observed sender replacement documented
 
 Coverage numbers can help locate untested code, but no percentage replaces the named security cases above.
