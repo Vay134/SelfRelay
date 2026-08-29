@@ -32,11 +32,7 @@ import {
 import AccountConsole from './AccountConsole';
 import ConfirmationDialog from './ConfirmationDialog';
 import TransferConsole from './TransferConsole';
-import {
-    nextWorkspaceView,
-    WORKSPACE_VIEWS,
-    type WorkspaceView,
-} from './workspaceTabs';
+import { nextWorkspaceView, WORKSPACE_VIEWS, type WorkspaceView } from './workspaceTabs';
 
 const REQUEST_POLL_INTERVAL_MS = 2_000;
 const PENDING_REQUEST_REFRESH_INTERVAL_MS = 5_000;

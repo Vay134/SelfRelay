@@ -241,8 +241,8 @@ function OtpAccess({
                     <p className="section-kicker">Account access · code sent</p>
                     <h2 id="otp-title">Enter the code from your email</h2>
                     <p>
-                        If the address can receive messages, a one-time code is on its way. The
-                        code expires soon and is never stored in this browser.
+                        If the address can receive messages, a one-time code is on its way. The code
+                        expires soon and is never stored in this browser.
                     </p>
                 </div>
                 <form className="account-form" onSubmit={onVerifyOtp}>
@@ -384,7 +384,9 @@ function EnrollmentReview({
                 <div>
                     <dt>Device fingerprint</dt>
                     <dd>
-                        <code title={identity.fingerprint}>{formatFingerprint(identity.fingerprint)}</code>
+                        <code title={identity.fingerprint}>
+                            {formatFingerprint(identity.fingerprint)}
+                        </code>
                     </dd>
                 </div>
                 <div>
@@ -394,11 +396,16 @@ function EnrollmentReview({
             </dl>
             {recovery && (
                 <p className="inline-message inline-message-warning" role="alert">
-                    Recovery revokes every existing device and session. Those browsers will need
-                    to pair again.
+                    Recovery revokes every existing device and session. Those browsers will need to
+                    pair again.
                 </p>
             )}
-            <button className="button button-primary" type="button" onClick={onConfirm} disabled={busy}>
+            <button
+                className="button button-primary"
+                type="button"
+                onClick={onConfirm}
+                disabled={busy}
+            >
                 {busy ? 'Trusting browser…' : 'Trust this browser'}
             </button>
         </section>
@@ -426,7 +433,9 @@ function DeviceCard({
         <article className="device-card">
             <div className="trusted-request-heading">
                 <div>
-                    <span className="request-label">{current ? 'This browser' : 'Trusted browser'}</span>
+                    <span className="request-label">
+                        {current ? 'This browser' : 'Trusted browser'}
+                    </span>
                     <h3>{device.label}</h3>
                 </div>
                 <span className={`request-state request-state-${device.status}`}>
@@ -438,7 +447,9 @@ function DeviceCard({
                 <div>
                     <dt>Fingerprint</dt>
                     <dd>
-                        <code title={device.fingerprint}>{formatFingerprint(device.fingerprint)}</code>
+                        <code title={device.fingerprint}>
+                            {formatFingerprint(device.fingerprint)}
+                        </code>
                     </dd>
                 </div>
                 <div>
@@ -556,7 +567,10 @@ function AccountDashboard({
                 {devices.length === 0 ? (
                     <div className="empty-state">
                         <strong>No browsers registered</strong>
-                        <p>Register a browser with email recovery or pair one from another trusted browser.</p>
+                        <p>
+                            Register a browser with email recovery or pair one from another trusted
+                            browser.
+                        </p>
                     </div>
                 ) : (
                     <div className="device-list">
@@ -584,15 +598,25 @@ function AccountDashboard({
                     {sessions.map((item) => (
                         <div className="session-row" key={item.session_id}>
                             <div>
-                                <strong>{item.device_id === session.device_id ? 'This browser' : 'Trusted browser'}</strong>
+                                <strong>
+                                    {item.device_id === session.device_id
+                                        ? 'This browser'
+                                        : 'Trusted browser'}
+                                </strong>
                                 <span>{formatDate(item.last_seen_at)}</span>
                             </div>
-                            <span className={`request-state ${item.revoked_at ? 'request-state-revoked' : 'request-state-active'}`}>
-                                {item.revoked_at ? `Ended ${formatDate(item.revoked_at)}` : 'Active'}
+                            <span
+                                className={`request-state ${item.revoked_at ? 'request-state-revoked' : 'request-state-active'}`}
+                            >
+                                {item.revoked_at
+                                    ? `Ended ${formatDate(item.revoked_at)}`
+                                    : 'Active'}
                             </span>
                         </div>
                     ))}
-                    {sessions.length === 0 && <p className="empty-copy">No session history is available.</p>}
+                    {sessions.length === 0 && (
+                        <p className="empty-copy">No session history is available.</p>
+                    )}
                 </div>
             </div>
         </section>
@@ -629,7 +653,9 @@ function AccountConsole() {
             setSession(current);
             setDevices(nextDevices);
             setSessions(nextSessions);
-            setDrafts(Object.fromEntries(nextDevices.map((device) => [device.device_id, device.label])));
+            setDrafts(
+                Object.fromEntries(nextDevices.map((device) => [device.device_id, device.label])),
+            );
             setView('authenticated');
             setError(null);
         } catch (refreshError) {
@@ -736,11 +762,22 @@ function AccountConsole() {
             setNeedsRecovery(false);
             setView('challenge');
         } catch (registrationError) {
-            if (registrationError instanceof ApiError && registrationError.status === 409 && !isRecovery) {
+            if (
+                registrationError instanceof ApiError &&
+                registrationError.status === 409 &&
+                !isRecovery
+            ) {
                 setNeedsRecovery(true);
-                setNotice('This account already has a trusted browser. Pair this browser from that device, or recover by email.');
+                setNotice(
+                    'This account already has a trusted browser. Pair this browser from that device, or recover by email.',
+                );
             } else {
-                setError(errorMessage(registrationError, 'The browser enrollment request could not be created.'));
+                setError(
+                    errorMessage(
+                        registrationError,
+                        'The browser enrollment request could not be created.',
+                    ),
+                );
             }
         } finally {
             setBusy(false);
@@ -750,7 +787,8 @@ function AccountConsole() {
     const requestEnrollment = () => {
         openConfirmation({
             title: 'Trust this browser?',
-            description: 'This browser will become a trusted device and receive an authenticated session after its key proof succeeds.',
+            description:
+                'This browser will become a trusted device and receive an authenticated session after its key proof succeeds.',
             confirmLabel: 'Review enrollment',
             action: async () => prepareRegistration(false),
         });
@@ -759,7 +797,8 @@ function AccountConsole() {
     const requestRecovery = () => {
         openConfirmation({
             title: 'Start account recovery?',
-            description: 'Recovery revokes every existing session and device. Other browsers will need to pair again after this browser is trusted.',
+            description:
+                'Recovery revokes every existing session and device. Other browsers will need to pair again after this browser is trusted.',
             confirmLabel: 'Start recovery',
             danger: true,
             action: async () => prepareRegistration(true),
@@ -852,7 +891,9 @@ function AccountConsole() {
         setNotice(null);
         try {
             const updated = await renameDevice(device.device_id, nextLabel);
-            setDevices((current) => current.map((item) => (item.device_id === updated.device_id ? updated : item)));
+            setDevices((current) =>
+                current.map((item) => (item.device_id === updated.device_id ? updated : item)),
+            );
             setDrafts((current) => ({ ...current, [updated.device_id]: updated.label }));
             setNotice('Browser label saved.');
         } catch (renameError) {
@@ -882,10 +923,16 @@ function AccountConsole() {
                         setDevices([]);
                         setSessions([]);
                         setView('signed-out');
-                        setNotice('This browser was revoked. Recover or pair it again to continue.');
+                        setNotice(
+                            'This browser was revoked. Recover or pair it again to continue.',
+                        );
                     } else {
-                        setDevices((current) => current.filter((item) => item.device_id !== device.device_id));
-                        setSessions((current) => current.filter((item) => item.device_id !== device.device_id));
+                        setDevices((current) =>
+                            current.filter((item) => item.device_id !== device.device_id),
+                        );
+                        setSessions((current) =>
+                            current.filter((item) => item.device_id !== device.device_id),
+                        );
                         setNotice('Browser revoked.');
                     }
                 } catch (revokeError) {
@@ -925,7 +972,9 @@ function AccountConsole() {
                 busyDeviceId={busyDeviceId}
                 busy={busy}
                 onRefresh={() => void refresh()}
-                onDraftChange={(deviceId, value) => setDrafts((current) => ({ ...current, [deviceId]: value }))}
+                onDraftChange={(deviceId, value) =>
+                    setDrafts((current) => ({ ...current, [deviceId]: value }))
+                }
                 onRename={(device, event) => void handleRename(device, event)}
                 onRevoke={handleRevoke}
                 onLogout={() => void handleLogout()}
@@ -970,11 +1019,21 @@ function AccountConsole() {
                     />
                 </label>
                 <div className="request-actions">
-                    <button className="button button-primary" type="button" onClick={requestEnrollment} disabled={busy}>
+                    <button
+                        className="button button-primary"
+                        type="button"
+                        onClick={requestEnrollment}
+                        disabled={busy}
+                    >
                         Review browser enrollment
                     </button>
                     {needsRecovery && (
-                        <button className="button button-danger" type="button" onClick={requestRecovery} disabled={busy}>
+                        <button
+                            className="button button-danger"
+                            type="button"
+                            onClick={requestRecovery}
+                            disabled={busy}
+                        >
                             Recover account by email
                         </button>
                     )}
@@ -1005,14 +1064,21 @@ function AccountConsole() {
                 <dl className="request-details">
                     <div>
                         <dt>Account ID</dt>
-                        <dd><code>{loginChallenge.account_id}</code></dd>
+                        <dd>
+                            <code>{loginChallenge.account_id}</code>
+                        </dd>
                     </div>
                     <div>
                         <dt>Challenge</dt>
                         <dd>{formatExpiry(loginChallenge.expires_at)}</dd>
                     </div>
                 </dl>
-                <button className="button button-primary" type="button" onClick={() => void completeDeviceLoginFlow()} disabled={busy}>
+                <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={() => void completeDeviceLoginFlow()}
+                    disabled={busy}
+                >
                     {busy ? 'Signing in…' : 'Sign in with this key'}
                 </button>
             </section>
@@ -1026,7 +1092,11 @@ function AccountConsole() {
             <section className="account-panel" aria-labelledby="account-error-title">
                 <p className="section-kicker">Account access</p>
                 <h2 id="account-error-title">Account details are unavailable</h2>
-                <button className="button button-secondary" type="button" onClick={() => void refresh()}>
+                <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => void refresh()}
+                >
                     Try again
                 </button>
             </section>
@@ -1035,12 +1105,19 @@ function AccountConsole() {
     return (
         <>
             {error && (
-                <p className="inline-message inline-message-error account-global-message" role="alert">
+                <p
+                    className="inline-message inline-message-error account-global-message"
+                    role="alert"
+                >
                     {error}
                 </p>
             )}
             {notice && (
-                <p className="inline-message inline-message-success account-global-message" role="status" aria-live="polite">
+                <p
+                    className="inline-message inline-message-success account-global-message"
+                    role="status"
+                    aria-live="polite"
+                >
                     {notice}
                 </p>
             )}

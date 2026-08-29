@@ -1,13 +1,5 @@
-import {
-    apiRequest,
-    type AuthenticatedDevice,
-    type CurrentSession,
-} from './pairingApi';
-import {
-    encodeBase64Url,
-    signChallenge,
-    type DeviceIdentity,
-} from './deviceIdentity';
+import { apiRequest, type AuthenticatedDevice, type CurrentSession } from './pairingApi';
+import { encodeBase64Url, signChallenge, type DeviceIdentity } from './deviceIdentity';
 
 export type OtpBootstrap = {
     bootstrap_id: string;
@@ -157,10 +149,7 @@ export async function listDevices(): Promise<AuthenticatedDevice[]> {
     return Array.isArray(body.devices) ? body.devices : [];
 }
 
-export async function renameDevice(
-    deviceId: string,
-    label: string,
-): Promise<AuthenticatedDevice> {
+export async function renameDevice(deviceId: string, label: string): Promise<AuthenticatedDevice> {
     const body = await apiRequest<{ device: AuthenticatedDevice }>(
         `/auth/devices/${encodeURIComponent(deviceId)}`,
         {

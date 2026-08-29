@@ -29,12 +29,7 @@ function UntrustedTextFixture({
 
 function renderUntrustedText(value: string): string {
     return renderToStaticMarkup(
-        <UntrustedTextFixture
-            label={value}
-            fileName={value}
-            mediaType={value}
-            error={value}
-        />,
+        <UntrustedTextFixture label={value} fileName={value} mediaType={value} error={value} />,
     );
 }
 

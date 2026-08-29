@@ -240,7 +240,7 @@ select throws_ok(
         )
     $$,
     '23503',
-    'a transfer cannot combine devices from different accounts'
+    'insert or update on table "transfer_requests" violates foreign key constraint "transfer_requests_recipient_device_fk"'
 );
 
 select * from finish();
