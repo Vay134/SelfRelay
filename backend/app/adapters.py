@@ -34,14 +34,52 @@ class AuthGateway(Protocol):
         """Verify an OTP and return the provider's authenticated identity."""
 
 
-def create_auth_gateway(app_env: AppEnvironment, adapter: str) -> AuthGateway:
+class AuthGatewayUnavailableError(RuntimeError):
+    """Raised when an authentication provider cannot safely complete a request."""
+
+
+class SupabaseAuthGateway:
+    """Use Supabase Auth email OTP endpoints without retaining provider sessions."""
+
+    def __init__(self, *, url: str, publishable_key: str) -> None:
+        self._url = url.rstrip("/")
+        self._headers = {"Accept": "application/json", "apikey": publishable_key}
+
+    async def start_otp(self, email: str) -> None:
+        await self._post("/auth/v1/otp", {"email": email, "create_user": True})
+
+    async def verify_otp(self, email: str, otp: str) -> AuthIdentity:
+        response = await self._post("/auth/v1/verify", {"email": email, "token": otp, "type": "email"}, invalid_is_otp=True)
+        try:
+            user = response.json()["user"]
+            user_id, user_email = user["id"], user["email"]
+        except (KeyError, TypeError, ValueError) as error:
+            raise AuthGatewayUnavailableError("Supabase Auth returned an invalid response") from error
+        if not isinstance(user_id, str) or not isinstance(user_email, str):
+            raise AuthGatewayUnavailableError("Supabase Auth returned an invalid response")
+        return AuthIdentity(user_id=user_id, email=user_email)
+
+    async def _post(self, path: str, payload: dict[str, object], *, invalid_is_otp: bool = False) -> httpx.Response:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(f"{self._url}{path}", headers=self._headers, json=payload)
+        except httpx.HTTPError as error:
+            raise AuthGatewayUnavailableError("Supabase Auth request failed") from error
+        if response.is_success:
+            return response
+        if invalid_is_otp and 400 <= response.status_code < 500:
+            raise InvalidOtpError("invalid OTP")
+        raise AuthGatewayUnavailableError("Supabase Auth request failed")
+
+
+def create_auth_gateway(app_env: AppEnvironment, adapter: str, *, supabase_url: str | None = None, supabase_publishable_key: str | None = None) -> AuthGateway:
     """Build the configured AuthGateway without silently substituting a fake in production."""
 
     if adapter == "fake":
         return FakeAuthGateway(app_env=app_env)
-    raise ConfigurationError(
-        "the Supabase Auth adapter is not configured; provide a production adapter before startup"
-    )
+    if adapter == "supabase" and supabase_url and supabase_publishable_key:
+        return SupabaseAuthGateway(url=supabase_url, publishable_key=supabase_publishable_key)
+    raise ConfigurationError("Supabase Auth settings must be configured before startup")
 
 
 @dataclass(frozen=True, slots=True)

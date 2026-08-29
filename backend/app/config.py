@@ -129,6 +129,8 @@ class Settings:
     auth_adapter: AuthAdapter
     turn_adapter: TurnAdapter
     rate_limit_secret: str = _DEFAULT_RATE_LIMIT_SECRET
+    supabase_url: str | None = None
+    supabase_publishable_key: str | None = None
     availability_probe_token: str | None = None
     cloudflare_turn_key_id: str | None = None
     cloudflare_turn_api_token: str | None = None
@@ -166,6 +168,8 @@ class Settings:
             lower=True,
         )
         rate_limit_secret = _value(source, "RATE_LIMIT_SECRET", _DEFAULT_RATE_LIMIT_SECRET)
+        supabase_url = _optional_value(source, "SUPABASE_URL")
+        supabase_publishable_key = _optional_value(source, "SUPABASE_PUBLISHABLE_KEY")
         availability_probe_token = _optional_value(source, "AVAILABILITY_PROBE_TOKEN")
         cloudflare_turn_key_id = _turn_secret(
             source,
@@ -179,6 +183,8 @@ class Settings:
         )
         if app_env == "production" and (auth_adapter == "fake" or turn_adapter == "fake"):
             raise ConfigurationError("fake adapters are not allowed when APP_ENV is production")
+        if auth_adapter == "supabase" and (supabase_url is None or supabase_publishable_key is None):
+            raise ConfigurationError("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be configured when AUTH_ADAPTER is supabase")
         return cls(
             app_env=cast(AppEnvironment, app_env),
             app_origin=_origin(source, "APP_ORIGIN"),
@@ -188,6 +194,8 @@ class Settings:
             auth_adapter=cast(AuthAdapter, auth_adapter),
             turn_adapter=cast(TurnAdapter, turn_adapter),
             rate_limit_secret=rate_limit_secret,
+            supabase_url=_origin(source, "SUPABASE_URL") if supabase_url else None,
+            supabase_publishable_key=supabase_publishable_key,
             availability_probe_token=availability_probe_token,
             cloudflare_turn_key_id=cloudflare_turn_key_id,
             cloudflare_turn_api_token=cloudflare_turn_api_token,
