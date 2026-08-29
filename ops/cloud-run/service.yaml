@@ -1,0 +1,63 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: selfrelay-api
+  namespace: PROJECT_NUMBER
+  labels:
+    cloud.googleapis.com/location: asia-southeast1
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "true"
+        run.googleapis.com/secrets: "selfrelay-database-url:projects/PROJECT_NUMBER/secrets/selfrelay-database-url,selfrelay-rate-limit-secret:projects/PROJECT_NUMBER/secrets/selfrelay-rate-limit-secret,selfrelay-availability-probe-token:projects/PROJECT_NUMBER/secrets/selfrelay-availability-probe-token,selfrelay-supabase-url:projects/PROJECT_NUMBER/secrets/selfrelay-supabase-url,selfrelay-supabase-publishable-key:projects/PROJECT_NUMBER/secrets/selfrelay-supabase-publishable-key"
+    spec:
+      serviceAccountName: SERVICE_ACCOUNT_EMAIL
+      timeoutSeconds: 3600
+      containers:
+        - name: api
+          image: REGION-docker.pkg.dev/PROJECT_ID/ARTIFACT_REPOSITORY/selfrelay-api:IMAGE_TAG
+          ports:
+            # The http1 protocol keeps Cloud Run end-to-end HTTP/2 disabled.
+            - name: http1
+              containerPort: 8080
+          env:
+            - name: APP_ENV
+              value: production
+            - name: APP_ORIGIN
+              value: https://APP_ORIGIN_PLACEHOLDER
+            - name: API_ORIGIN
+              value: https://API_ORIGIN_PLACEHOLDER
+            - name: LOG_LEVEL
+              value: INFO
+            - name: AUTH_ADAPTER
+              value: supabase
+            - name: TURN_ADAPTER
+              value: disabled
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: selfrelay-database-url
+                  key: "1"
+            - name: RATE_LIMIT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: selfrelay-rate-limit-secret
+                  key: "1"
+            - name: AVAILABILITY_PROBE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: selfrelay-availability-probe-token
+                  key: "1"
+            - name: SUPABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: selfrelay-supabase-url
+                  key: "1"
+            - name: SUPABASE_PUBLISHABLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: selfrelay-supabase-publishable-key
+                  key: "1"
