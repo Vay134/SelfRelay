@@ -101,6 +101,8 @@ def test_real_adapters_are_allowed_in_production() -> None:
             APP_ENV="production",
             AUTH_ADAPTER="supabase",
             TURN_ADAPTER="cloudflare",
+            SUPABASE_URL="https://project.supabase.co",
+            SUPABASE_PUBLISHABLE_KEY="sb_publishable_test_key",
             CLOUDFLARE_TURN_KEY_ID="turn-key-id",
             CLOUDFLARE_TURN_API_TOKEN="turn-api-token",
         )
@@ -119,6 +121,8 @@ def test_disabled_turn_adapter_is_allowed_in_production_without_turn_secrets() -
             APP_ENV="production",
             AUTH_ADAPTER="supabase",
             TURN_ADAPTER="disabled",
+            SUPABASE_URL="https://project.supabase.co",
+            SUPABASE_PUBLISHABLE_KEY="sb_publishable_test_key",
         )
     )
 
