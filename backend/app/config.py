@@ -183,8 +183,13 @@ class Settings:
         )
         if app_env == "production" and (auth_adapter == "fake" or turn_adapter == "fake"):
             raise ConfigurationError("fake adapters are not allowed when APP_ENV is production")
-        if auth_adapter == "supabase" and (supabase_url is None or supabase_publishable_key is None):
-            raise ConfigurationError("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be configured when AUTH_ADAPTER is supabase")
+        if auth_adapter == "supabase" and (
+            supabase_url is None or supabase_publishable_key is None
+        ):
+            raise ConfigurationError(
+                "SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be configured "
+                "when AUTH_ADAPTER is supabase"
+            )
         return cls(
             app_env=cast(AppEnvironment, app_env),
             app_origin=_origin(source, "APP_ORIGIN"),

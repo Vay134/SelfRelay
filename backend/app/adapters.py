@@ -49,20 +49,28 @@ class SupabaseAuthGateway:
         await self._post("/auth/v1/otp", {"email": email, "create_user": True})
 
     async def verify_otp(self, email: str, otp: str) -> AuthIdentity:
-        response = await self._post("/auth/v1/verify", {"email": email, "token": otp, "type": "email"}, invalid_is_otp=True)
+        response = await self._post(
+            "/auth/v1/verify", {"email": email, "token": otp, "type": "email"}, invalid_is_otp=True
+        )
         try:
             user = response.json()["user"]
             user_id, user_email = user["id"], user["email"]
         except (KeyError, TypeError, ValueError) as error:
-            raise AuthGatewayUnavailableError("Supabase Auth returned an invalid response") from error
+            raise AuthGatewayUnavailableError(
+                "Supabase Auth returned an invalid response"
+            ) from error
         if not isinstance(user_id, str) or not isinstance(user_email, str):
             raise AuthGatewayUnavailableError("Supabase Auth returned an invalid response")
         return AuthIdentity(user_id=user_id, email=user_email)
 
-    async def _post(self, path: str, payload: dict[str, object], *, invalid_is_otp: bool = False) -> httpx.Response:
+    async def _post(
+        self, path: str, payload: dict[str, object], *, invalid_is_otp: bool = False
+    ) -> httpx.Response:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(f"{self._url}{path}", headers=self._headers, json=payload)
+                response = await client.post(
+                    f"{self._url}{path}", headers=self._headers, json=payload
+                )
         except httpx.HTTPError as error:
             raise AuthGatewayUnavailableError("Supabase Auth request failed") from error
         if response.is_success:
@@ -72,7 +80,13 @@ class SupabaseAuthGateway:
         raise AuthGatewayUnavailableError("Supabase Auth request failed")
 
 
-def create_auth_gateway(app_env: AppEnvironment, adapter: str, *, supabase_url: str | None = None, supabase_publishable_key: str | None = None) -> AuthGateway:
+def create_auth_gateway(
+    app_env: AppEnvironment,
+    adapter: str,
+    *,
+    supabase_url: str | None = None,
+    supabase_publishable_key: str | None = None,
+) -> AuthGateway:
     """Build the configured AuthGateway without silently substituting a fake in production."""
 
     if adapter == "fake":

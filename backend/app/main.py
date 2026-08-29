@@ -65,7 +65,12 @@ configure_logging()
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
-    auth_gateway = create_auth_gateway(settings.app_env, settings.auth_adapter, supabase_url=settings.supabase_url, supabase_publishable_key=settings.supabase_publishable_key)
+    auth_gateway = create_auth_gateway(
+        settings.app_env,
+        settings.auth_adapter,
+        supabase_url=settings.supabase_url,
+        supabase_publishable_key=settings.supabase_publishable_key,
+    )
     turn_credential_provider = create_turn_credential_provider(
         settings.app_env,
         settings.turn_adapter,
