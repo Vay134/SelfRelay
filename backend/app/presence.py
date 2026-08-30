@@ -140,6 +140,12 @@ class TransferRepositoryPort(Protocol):
         transfer_id: UUID,
     ) -> TransferRequestRecord | None: ...
 
+    async def mark_relay_used(
+        self,
+        account_id: UUID,
+        transfer_id: UUID,
+    ) -> TransferRequestRecord | None: ...
+
 
 class ConnectionLimitError(RuntimeError):
     """Raised when an account already has its maximum active sockets."""
@@ -318,6 +324,8 @@ class PresenceManager:
             transfer.recipient_device_id,
         ):
             return False
+        if mode == "relay":
+            await repository.mark_relay_used(connection.account_id, transfer_id)
         self._metrics.increment(f"webrtc_{mode}")
         return True
 

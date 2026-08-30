@@ -280,6 +280,7 @@ def test_peer_reported_connection_mode_is_counted_only_for_participants() -> Non
 
         assert manager.metrics.value("webrtc_relay") == 1
         assert manager.metrics.value("webrtc_direct") == 0
+        assert (await repository.get_by_id(account_id, offer.id)).relay_used
 
     asyncio.run(exercise())
 
