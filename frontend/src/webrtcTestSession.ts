@@ -29,6 +29,8 @@ export type PeerConnectionFactory = (configuration?: RTCConfiguration) => RTCPee
 
 export const MAX_PENDING_ICE_CANDIDATES = 64;
 export const DEFAULT_NEGOTIATION_TIMEOUT_MS = 30_000;
+const RELAY_STATUS_REFRESH_DELAY_MS = 250;
+const MAX_RELAY_STATUS_REFRESH_ATTEMPTS = 4;
 
 export type WebRtcTestSessionOptions = {
     transfer: TransferRequest;
@@ -69,6 +71,8 @@ export class WebRtcTestSession {
     private materialValue: DerivedHandshakeMaterial | null = null;
     private relayStatusValue: WebRtcRelayStatus = 'unknown';
     private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
+    private relayStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    private relayStatusRefreshAttempts = 0;
 
     constructor(options: WebRtcTestSessionOptions) {
         this.transfer = options.transfer;
@@ -300,6 +304,7 @@ export class WebRtcTestSession {
         this.dataChannel?.close();
         this.peerConnection.close();
         this.clearNegotiationTimeout();
+        this.clearRelayStatusRefresh();
         this.setState('closed');
     }
 
@@ -384,13 +389,18 @@ export class WebRtcTestSession {
     }
 
     private async refreshRelayStatus(): Promise<void> {
-        if (typeof this.peerConnection.getStats !== 'function') {
+        if (
+            this.relayStatusValue !== 'unknown' ||
+            this.stateValue !== 'connected' ||
+            typeof this.peerConnection.getStats !== 'function'
+        ) {
             return;
         }
         let stats: RTCStatsReport;
         try {
             stats = await this.peerConnection.getStats();
         } catch {
+            this.scheduleRelayStatusRefresh();
             return;
         }
         const selectedPair = [...stats.values()].find((value) => {
@@ -412,11 +422,13 @@ export class WebRtcTestSession {
               }
             | undefined;
         if (!selectedPair) {
+            this.scheduleRelayStatusRefresh();
             return;
         }
         const localCandidate = this.candidateStats(stats, selectedPair.localCandidateId);
         const remoteCandidate = this.candidateStats(stats, selectedPair.remoteCandidateId);
         if (!localCandidate && !remoteCandidate) {
+            this.scheduleRelayStatusRefresh();
             return;
         }
         const relayUsed =
@@ -446,6 +458,29 @@ export class WebRtcTestSession {
             return;
         }
         this.relayStatusValue = status;
+        this.clearRelayStatusRefresh();
         this.onRelayStatusChange?.(status);
+    }
+
+    private scheduleRelayStatusRefresh(): void {
+        if (
+            this.relayStatusRefreshTimer !== null ||
+            this.relayStatusRefreshAttempts >= MAX_RELAY_STATUS_REFRESH_ATTEMPTS ||
+            this.stateValue !== 'connected'
+        ) {
+            return;
+        }
+        this.relayStatusRefreshAttempts += 1;
+        this.relayStatusRefreshTimer = setTimeout(() => {
+            this.relayStatusRefreshTimer = null;
+            void this.refreshRelayStatus();
+        }, RELAY_STATUS_REFRESH_DELAY_MS);
+    }
+
+    private clearRelayStatusRefresh(): void {
+        if (this.relayStatusRefreshTimer !== null) {
+            clearTimeout(this.relayStatusRefreshTimer);
+            this.relayStatusRefreshTimer = null;
+        }
     }
 }

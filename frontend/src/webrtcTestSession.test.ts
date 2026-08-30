@@ -222,4 +222,42 @@ describe('WebRtcTestSession', () => {
         expect(session.relayStatus).toBe('relay');
         expect(relayStatuses).toEqual(['relay']);
     });
+
+    it('retries the relay check until the selected ICE pair is available', async () => {
+        vi.useFakeTimers();
+        try {
+            const connection = new FakePeerConnection();
+            const relayStatuses: string[] = [];
+            const session = new WebRtcTestSession({
+                transfer,
+                role: 'recipient',
+                peerConnectionFactory: fakeFactory(connection),
+                sendSignal: () => undefined,
+                onRelayStatusChange: (status) => relayStatuses.push(status),
+            });
+            const channel = new FakeDataChannel('secure-transfer-test');
+
+            connection.receiveChannel(channel);
+            channel.readyState = 'open';
+            channel.onopen?.();
+            await Promise.resolve();
+
+            connection.stats.set('pair', {
+                type: 'candidate-pair',
+                state: 'succeeded',
+                selected: true,
+                localCandidateId: 'local',
+            });
+            connection.stats.set('local', {
+                type: 'local-candidate',
+                candidateType: 'relay',
+            });
+            await vi.advanceTimersByTimeAsync(250);
+
+            expect(session.relayStatus).toBe('relay');
+            expect(relayStatuses).toEqual(['relay']);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
