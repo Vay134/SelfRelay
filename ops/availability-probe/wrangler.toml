@@ -1,9 +1,8 @@
 name = "e2e-secure-file-transfer-availability"
 main = "src/index.ts"
-compatibility_date = "2025-08-01"
+compatibility_date = "2026-08-30"
 
 # Three low-frequency runs per day in UTC. Change this list when operations
 # needs a different cadence; keep the probe low frequency and bounded.
 [triggers]
 crons = ["0 0,8,16 * * *"]
-
