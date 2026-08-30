@@ -30,7 +30,10 @@ from app.pairings import (
     PAIRING_MAX_ATTEMPTS,
     PAIRING_RATE_LIMIT_MESSAGE,
     PAIRING_REQUEST_ACCOUNT_LIMIT,
+    PAIRING_REQUEST_EMAIL_LIMIT,
     PAIRING_REQUEST_MESSAGE,
+    PAIRING_REQUEST_NETWORK_LIMIT,
+    PAIRING_REQUEST_RATE_LIMIT_WINDOW,
 )
 from app.repositories.devices import InMemoryDeviceRepository
 from app.repositories.models import AccountRecord, DeviceRecord, PairingRequestRecord
@@ -298,6 +301,11 @@ def test_duplicate_pending_request_is_suppressed_and_audit_event_is_bounded(
 def test_pairing_creation_is_limited_per_account_and_records_rate_limit_event(
     client: TestClient,
 ) -> None:
+    assert PAIRING_REQUEST_RATE_LIMIT_WINDOW == timedelta(minutes=5)
+    assert PAIRING_REQUEST_EMAIL_LIMIT == 10
+    assert PAIRING_REQUEST_ACCOUNT_LIMIT == 10
+    assert PAIRING_REQUEST_NETWORK_LIMIT == 10
+
     email = "pairing-rate-limit@example.test"
     _register(client, email)
     headers = {"Origin": APP_ORIGIN}

@@ -39,9 +39,9 @@ from .session_api import get_authenticated_session, require_session_csrf, set_se
 from .sessions import CreatedSession, SessionService, hash_secret
 
 PAIRING_REQUEST_LIFETIME = timedelta(minutes=10)
-PAIRING_REQUEST_RATE_LIMIT_WINDOW = timedelta(minutes=10)
-PAIRING_REQUEST_EMAIL_LIMIT = 3
-PAIRING_REQUEST_ACCOUNT_LIMIT = 3
+PAIRING_REQUEST_RATE_LIMIT_WINDOW = timedelta(minutes=5)
+PAIRING_REQUEST_EMAIL_LIMIT = 10
+PAIRING_REQUEST_ACCOUNT_LIMIT = 10
 PAIRING_REQUEST_NETWORK_LIMIT = 10
 PAIRING_SECURITY_EVENT_RETENTION = timedelta(days=30)
 PAIRING_COMPARISON_CODE_LENGTH = 6
