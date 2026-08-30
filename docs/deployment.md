@@ -10,7 +10,7 @@ The project uses separate development, test, and production settings. Test adapt
 | Development | Vite dev server | Local FastAPI | Development Supabase project or local stack | Team-address testing or fake |
 | Production | Cloudflare Pages and a same-origin Pages Function gateway | Google Cloud Run in Singapore | Supabase hosted project | Brevo custom SMTP |
 
-Local development does not imply local production hosting. Phase 11 is currently implementing and validating the production environment.
+Local development does not imply local production hosting. Phase 11 production deployment and validation are complete.
 
 ## Production topology
 
@@ -108,6 +108,8 @@ The Brevo setup consists of:
 Without an owned domain, SPF, DKIM, and DMARC cannot be configured for the personal sender's domain. Brevo may replace a free sender address with a provider-managed transactional address. That is accepted for the version 1 demonstration, but it is less recognizable and may have weaker deliverability than an authenticated custom domain. A future owned domain can be added without changing the FastAPI, frontend, or transfer protocol.
 
 The Brevo SMTP key is entered only in Supabase's protected SMTP configuration. It is not stored in FastAPI, the frontend, Google Cloud, DNS, documentation, or repository files.
+
+Production validation on August 30, 2026 confirmed OTP delivery and verification with external Gmail and Outlook recipients. The Outlook message displayed `SelfRelay <selfrelay@11807718.brevosend.com>` as its sender identity. The release checks also verified a forced TURN transfer, direct-first restoration, an authenticated browser reconnect after a Cloud Run revision restart, and no known secret patterns in the live bundle or recent Cloud Run logs.
 
 ## Configuration
 
