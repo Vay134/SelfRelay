@@ -260,4 +260,25 @@ describe('WebRtcTestSession', () => {
             vi.useRealTimers();
         }
     });
+
+    it('reports a relay-only connection without waiting for ICE statistics', () => {
+        const connection = new FakePeerConnection();
+        const relayStatuses: string[] = [];
+        const session = new WebRtcTestSession({
+            transfer,
+            role: 'recipient',
+            peerConnectionFactory: fakeFactory(connection),
+            rtcConfiguration: { iceTransportPolicy: 'relay' },
+            sendSignal: () => undefined,
+            onRelayStatusChange: (status) => relayStatuses.push(status),
+        });
+        const channel = new FakeDataChannel('secure-transfer-test');
+
+        connection.receiveChannel(channel);
+        channel.readyState = 'open';
+        channel.onopen?.();
+
+        expect(session.relayStatus).toBe('relay');
+        expect(relayStatuses).toEqual(['relay']);
+    });
 });

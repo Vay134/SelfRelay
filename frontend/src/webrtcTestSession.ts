@@ -61,6 +61,7 @@ export class WebRtcTestSession {
     private readonly accountEpoch?: number;
     private readonly onHandshake?: (material: DerivedHandshakeMaterial) => void;
     private readonly negotiationTimeoutMs: number;
+    private readonly relayOnly: boolean;
     private stateValue: WebRtcTestState = 'idle';
     private dataChannel: RTCDataChannel | null = null;
     private remoteDescriptionReady = false;
@@ -86,6 +87,7 @@ export class WebRtcTestSession {
         this.accountEpoch = options.accountEpoch;
         this.onHandshake = options.onHandshake;
         this.negotiationTimeoutMs = options.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS;
+        this.relayOnly = options.rtcConfiguration?.iceTransportPolicy === 'relay';
         if (!Number.isFinite(this.negotiationTimeoutMs) || this.negotiationTimeoutMs <= 0) {
             throw new TypeError('The negotiation timeout must be positive.');
         }
@@ -113,7 +115,7 @@ export class WebRtcTestSession {
         this.peerConnection.onconnectionstatechange = () => {
             if (this.peerConnection.connectionState === 'connected') {
                 this.setState('connected');
-                void this.refreshRelayStatus();
+                this.reportRelayStatus();
             } else if (
                 this.peerConnection.connectionState === 'failed' ||
                 this.peerConnection.connectionState === 'closed'
@@ -341,7 +343,7 @@ export class WebRtcTestSession {
             this.onDataChannel?.(channel);
             this.clearNegotiationTimeout();
             this.setState('connected');
-            void this.refreshRelayStatus();
+            this.reportRelayStatus();
         };
         channel.onerror = () => {
             this.setState('failed');
@@ -434,6 +436,14 @@ export class WebRtcTestSession {
         const relayUsed =
             localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay';
         this.setRelayStatus(relayUsed ? 'relay' : 'direct');
+    }
+
+    private reportRelayStatus(): void {
+        if (this.relayOnly) {
+            this.setRelayStatus('relay');
+            return;
+        }
+        void this.refreshRelayStatus();
     }
 
     private candidateStats(
