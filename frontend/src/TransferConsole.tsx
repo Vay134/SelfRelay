@@ -30,7 +30,7 @@ import {
 import { PresenceSocketClient, type PresenceClientStatus } from './presenceClient';
 import { AvailabilityController, type AvailabilityState } from './availability/availability';
 import { decodeBase64Url, importP256Spki, type DerivedHandshakeMaterial } from './transferProtocol';
-import { rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
+import { relayOnlyTestEnabled, rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
 import ConfirmationDialog from './ConfirmationDialog';
 import {
     WebRtcTestSession,
@@ -509,7 +509,9 @@ function TransferConsole() {
                     transfer,
                     role,
                     sendSignal: (message) => socket.send(message),
-                    rtcConfiguration: rtcConfigurationFromTurnCredentials(turnCredentials),
+                    rtcConfiguration: rtcConfigurationFromTurnCredentials(turnCredentials, {
+                        relayOnly: relayOnlyTestEnabled(),
+                    }),
                     signingKey: identity.privateKey,
                     peerSigningPublicKey,
                     accountEpoch: current.account_device_epoch,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TurnCredentials } from './transferApi';
-import { rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
+import { relayOnlyTestEnabled, rtcConfigurationFromTurnCredentials } from './rtcConfiguration';
 import { createRelayOnlyRtcConfiguration } from './testRelayConfiguration';
 
 const credentials: TurnCredentials = {
@@ -22,7 +22,20 @@ describe('RTC configuration', () => {
         });
     });
 
-    it('provides relay-only configuration only through the test support module', () => {
+    it('uses relay-only ICE only when the test option is enabled', () => {
+        expect(rtcConfigurationFromTurnCredentials(credentials, { relayOnly: true })).toEqual({
+            iceServers: credentials.ice_servers,
+            iceTransportPolicy: 'relay',
+        });
+    });
+
+    it('enables relay-only mode only for the explicit test environment value', () => {
+        expect(relayOnlyTestEnabled()).toBe(false);
+        expect(relayOnlyTestEnabled({ VITE_FORCE_RELAY_FOR_TESTS: 'true' })).toBe(true);
+        expect(relayOnlyTestEnabled({ VITE_FORCE_RELAY_FOR_TESTS: 'TRUE' })).toBe(false);
+    });
+
+    it('keeps the test support configuration relay-only', () => {
         expect(createRelayOnlyRtcConfiguration(credentials)).toEqual({
             iceServers: credentials.ice_servers,
             iceTransportPolicy: 'relay',
