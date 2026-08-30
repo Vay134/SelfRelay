@@ -128,7 +128,15 @@ class PairingRequestRepository:
         """Return a pending request by fingerprint for one active account."""
 
         rows = await self._database.fetch(
-            f"""SELECT {_PAIRING_REQUEST_COLUMNS}
+            f"""WITH expired AS (
+                UPDATE private.pairing_requests
+                SET status = 'expired'
+                WHERE user_id = $1
+                  AND requested_fingerprint = $2
+                  AND status = 'pending'
+                  AND expires_at <= CURRENT_TIMESTAMP
+            )
+            SELECT {_PAIRING_REQUEST_COLUMNS}
             FROM private.pairing_requests
             WHERE user_id = $1
               AND requested_fingerprint = $2

@@ -136,6 +136,25 @@ def test_one_time_lookups_isolate_foreign_accounts() -> None:
     asyncio.run(exercise())
 
 
+def test_pending_pairing_lookup_expires_stale_matching_request() -> None:
+    async def exercise() -> None:
+        account_id = uuid4()
+        row = _pairing_row(account_id)
+        row["status"] = "pending"
+        database = OwnershipRecordingDatabase(account_id, row)
+        repository = PairingRequestRepository(database)
+
+        assert await repository.get_pending_by_fingerprint(account_id, b"f" * 32) is not None
+
+        query, parameters = database.calls[0]
+        assert parameters == (account_id, b"f" * 32)
+        assert "UPDATE private.pairing_requests" in query
+        assert "SET status = 'expired'" in query
+        assert "expires_at <= CURRENT_TIMESTAMP" in query
+
+    asyncio.run(exercise())
+
+
 def test_one_time_consumption_allows_only_one_concurrent_winner() -> None:
     async def exercise() -> None:
         account_id = uuid4()
