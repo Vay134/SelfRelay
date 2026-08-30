@@ -6,7 +6,7 @@ import asyncio
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import Protocol, cast
 from uuid import UUID, uuid4
 
 from .base import RepositoryDatabase, TransactionalRepositoryDatabase, first_row, required_row
@@ -42,6 +42,22 @@ _DEVICE_COLUMNS = """
     revoked_at,
     linked_by_device_id
 """
+
+
+class _DeviceRepositoryPort(Protocol):
+    async def get_by_id(self, account_id: UUID, device_id: UUID) -> DeviceRecord | None: ...
+
+    async def create(
+        self,
+        account_id: UUID,
+        epoch: int,
+        label: str,
+        signing_public_key_spki: bytes,
+        fingerprint: bytes,
+        *,
+        linked_by_device_id: UUID | None = None,
+        device_id: UUID | None = None,
+    ) -> DeviceRecord: ...
 
 
 class DeviceLinkingOtpRepository:
@@ -182,7 +198,7 @@ class DeviceLinkingOtpRepository:
 class InMemoryDeviceLinkingOtpRepository:
     """Explicit test-only linking-code store with atomic redemption."""
 
-    def __init__(self, device_repository: object) -> None:
+    def __init__(self, device_repository: _DeviceRepositoryPort) -> None:
         self._device_repository = device_repository
         self._records: dict[UUID, DeviceLinkingOtpRecord] = {}
         self._lock = threading.Lock()

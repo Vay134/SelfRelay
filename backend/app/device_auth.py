@@ -71,9 +71,8 @@ class AccountStorePort(Protocol):
     async def mark_email_fallback(
         self,
         account_id: UUID,
-        *,
         at: datetime,
-    ) -> None: ...
+    ) -> AccountRecord | None: ...
 
 
 class DeviceStorePort(Protocol):
