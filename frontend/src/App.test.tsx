@@ -1,30 +1,52 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import App from './App';
-import { nextWorkspaceView } from './workspaceTabs';
+import { sortDevicesByPresence } from './AccountConsole';
+import App, { PrivacyPage } from './App';
+import type { AuthenticatedDevice } from './pairingApi';
 
 describe('App', () => {
-    it('renders the frontend health page', () => {
+    it('renders the Relay account surface', () => {
         const page = renderToStaticMarkup(<App />);
 
         expect(page).toContain('<main');
-        expect(page).toContain('Secure File Transfer');
+        expect(page).toContain('Checking this browser session');
+        expect(page).toContain('Sign up or log in');
     });
 
-    it('renders the workspace as an accessible tablist with linked panels', () => {
+    it('uses one page instead of separate account and transfer tabs', () => {
         const markup = renderToStaticMarkup(<App />);
 
-        expect(markup).toContain('aria-label="Workspace sections"');
-        expect(markup.match(/class="workspace-tab /gu)).toHaveLength(2);
-        expect(markup).toContain('Transfer devices');
+        expect(markup).not.toContain('Workspace sections');
+        expect(markup).not.toContain('workspace-tab');
     });
 
-    it('moves through workspace tabs with wraparound and Home/End support', () => {
-        expect(nextWorkspaceView('account', 'ArrowLeft')).toBe('transfers');
-        expect(nextWorkspaceView('transfers', 'ArrowRight')).toBe('account');
-        expect(nextWorkspaceView('account', 'Home')).toBe('account');
-        expect(nextWorkspaceView('transfers', 'End')).toBe('transfers');
-        expect(nextWorkspaceView('account', 'Enter')).toBeNull();
+    it('explains the privacy model', () => {
+        const markup = renderToStaticMarkup(<PrivacyPage />);
+
+        expect(markup).toContain('Security architecture');
+        expect(markup).toContain('AES-256-GCM');
+        expect(markup).toContain('WebRTC');
+    });
+
+    it('orders online devices before offline devices', () => {
+        const device = (device_id: string, last_seen_at: string): AuthenticatedDevice => ({
+            device_id,
+            last_seen_at,
+            label: device_id,
+            status: 'active',
+            epoch: 1,
+            fingerprint: device_id,
+            created_at: last_seen_at,
+            revoked_at: null,
+            linked_by_device_id: null,
+        });
+        const offline = device('offline', '2026-08-30T12:00:00Z');
+        const online = device('online', '2026-08-29T12:00:00Z');
+
+        expect(sortDevicesByPresence([offline, online], new Set(['online']))).toEqual([
+            online,
+            offline,
+        ]);
     });
 });

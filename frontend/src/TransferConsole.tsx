@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    forwardRef,
+    useCallback,
+    useEffect,
+    useImperativeHandle,
+    useMemo,
+    useRef,
+    useState,
+    type ForwardedRef,
+} from 'react';
 
 import { listDevices } from './accountApi';
 import { ApiError, getCurrentSession, type CurrentSession } from './pairingApi';
@@ -221,7 +230,19 @@ function transferProgressPercent(
     return Math.min(100, Math.round((progress.bytesTransferred / progress.totalBytes) * 100));
 }
 
-function TransferConsole() {
+export type TransferConsoleHandle = {
+    startTransfer: (deviceId: string) => void;
+};
+
+type TransferConsoleProps = {
+    embedded?: boolean;
+    onReadyChange?: (ready: boolean) => void;
+};
+
+function TransferConsole(
+    { embedded = false, onReadyChange }: TransferConsoleProps,
+    ref: ForwardedRef<TransferConsoleHandle>,
+) {
     const [session, setSession] = useState<CurrentSession | null>(null);
     const [devices, setDevices] = useState<{ device_id: string; label: string }[]>([]);
     const [transfers, setTransfers] = useState<TransferRequest[]>([]);
@@ -263,6 +284,10 @@ function TransferConsole() {
     useEffect(() => {
         sessionRef.current = session;
     }, [session]);
+
+    useEffect(() => {
+        onReadyChange?.(state === 'ready');
+    }, [onReadyChange, state]);
 
     const upsertTransfer = (next: TransferRequest) => {
         setTransfers((current) => {
@@ -948,6 +973,10 @@ function TransferConsole() {
         }
     };
 
+    useImperativeHandle(ref, () => ({
+        startTransfer: (deviceId: string) => void handleCreateOffer(deviceId),
+    }));
+
     const handleAccept = async (transfer: TransferRequest) => {
         setBusyTransferId(transfer.transfer_id);
         setError(null);
@@ -1078,8 +1107,11 @@ function TransferConsole() {
 
     return (
         <>
-            <section className="account-panel transfer-panel" aria-labelledby="transfer-title">
-                <div className="panel-heading panel-heading-row">
+            <section
+                className={`account-panel transfer-panel ${embedded ? 'transfer-panel-embedded' : ''}`}
+                aria-labelledby="transfer-title"
+            >
+                <div className={`panel-heading panel-heading-row ${embedded ? 'sr-only' : ''}`}>
                     <div>
                         <p className="section-kicker">Secure transfer</p>
                         <h2 id="transfer-title">Send a file between trusted browsers</h2>
@@ -1116,28 +1148,30 @@ function TransferConsole() {
                         {notice}
                     </p>
                 )}
-                <div className="transfer-create">
-                    <div>
-                        <p className="request-label">Transfer to this device</p>
-                        <strong>Choose an active browser</strong>
+                {!embedded && (
+                    <div className="transfer-create">
+                        <div>
+                            <p className="request-label">Transfer to this device</p>
+                            <strong>Choose an active browser</strong>
+                        </div>
+                        <div className="request-actions">
+                            {otherDevices.map((device) => (
+                                <button
+                                    className="button button-primary"
+                                    key={device.device_id}
+                                    type="button"
+                                    onClick={() => void handleCreateOffer(device.device_id)}
+                                    disabled={busyTransferId === 'new'}
+                                >
+                                    {busyTransferId === 'new'
+                                        ? 'Connecting…'
+                                        : 'Transfer to ' + device.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                    <div className="request-actions">
-                        {otherDevices.map((device) => (
-                            <button
-                                className="button button-primary"
-                                key={device.device_id}
-                                type="button"
-                                onClick={() => void handleCreateOffer(device.device_id)}
-                                disabled={busyTransferId === 'new'}
-                            >
-                                {busyTransferId === 'new'
-                                    ? 'Connecting…'
-                                    : 'Transfer to ' + device.label}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                {otherDevices.length === 0 && (
+                )}
+                {!embedded && otherDevices.length === 0 && (
                     <p className="inline-message inline-message-neutral" role="status">
                         No other trusted browsers are online right now.
                     </p>
@@ -1454,4 +1488,4 @@ function TransferConsole() {
     );
 }
 
-export default TransferConsole;
+export default forwardRef<TransferConsoleHandle, TransferConsoleProps>(TransferConsole);

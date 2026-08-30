@@ -1,14 +1,20 @@
 :root {
-    font-family:
-        Inter,
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        'Segoe UI',
-        sans-serif;
-    color: #e5eef5;
-    background: #0b1720;
+    font-family: 'Segoe UI Variable', 'Segoe UI', Aptos, system-ui, sans-serif;
+    color: #242424;
+    background: linear-gradient(135deg, #b8ddf5 0%, #dceef9 38%, #f4faff 72%, #ffffff 100%);
+    font-synthesis: none;
+    --outlook-blue: #0f6cbd;
+    --outlook-blue-hover: #115ea3;
+    --outlook-blue-pressed: #0c3b5e;
+    --mail-canvas: #f5f7fb;
+    --mail-paper: #ffffff;
+    --mail-ink: #242424;
+    --mail-muted: #616161;
+    --mail-line: #e0e0e0;
+    --mail-line-strong: #c7c7c7;
+    --presence: #107c10;
+    --warning: #8a3b12;
+    --danger: #c50f1f;
 }
 
 * {
@@ -16,597 +22,934 @@
 }
 
 body {
-    margin: 0;
     min-width: 320px;
     min-height: 100vh;
+    margin: 0;
+    background: transparent;
 }
 
-.health-page {
-    display: grid;
-    min-height: 100vh;
-    place-items: center;
-    padding: 1.5rem;
-    background: radial-gradient(circle at top, #153b4d 0, transparent 45%), #0b1720;
-}
-.status-card {
-    width: min(100%, 36rem);
-    padding: clamp(2rem, 8vw, 4rem);
-    border: 1px solid #2e5263;
-    border-radius: 1.5rem;
-    background: rgb(14 33 44 / 92%);
-    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 24%);
-}
-.eyebrow {
-    margin: 0 0 0.75rem;
-    color: #65d6ad;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-}
-h1 {
-    max-width: 16ch;
-    margin: 0;
-    font-size: clamp(2rem, 8vw, 3.75rem);
-    line-height: 1.05;
-}
-.status-message {
-    margin: 1.5rem 0 0;
-    color: #b7cbd6;
-    font-size: 1.125rem;
-}
-.status-list {
-    display: grid;
-    gap: 0.75rem;
-    margin: 2rem 0 0;
-}
-.status-list div {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    padding-top: 0.75rem;
-    border-top: 1px solid #2e5263;
-}
-dt,
-dd {
-    margin: 0;
-}
-dt {
-    color: #8fa9b7;
-}
-dd {
-    font-weight: 600;
-}
-.status-ok {
-    color: #65d6ad;
-}
-.device-status {
-    margin: 2rem 0 0;
-    padding: 0.9rem 1rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.75rem;
-    color: #b7cbd6;
-    font-size: 0.95rem;
-    line-height: 1.5;
-}
-.device-status-ok {
-    border-color: #387d6e;
-    color: #9be7cc;
-}
-.device-status-warning {
-    border-color: #96723c;
-    color: #f5d7a0;
+body::before {
+    position: fixed;
+    z-index: 10;
+    inset: 0.75rem;
+    border: 1px solid rgb(15 108 189 / 14%);
+    content: '';
+    pointer-events: none;
 }
 
-.panel-heading-row,
-.trusted-request-heading,
-.transfer-group-heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-}
-.panel-heading h2,
-.transfer-group h3,
-.transfer-card h3 {
-    margin: 0;
-}
-.panel-heading p:not(.section-kicker),
-.transfer-copy,
-.empty-copy {
-    color: #b7cbd6;
-    line-height: 1.55;
-}
-.section-kicker,
-.request-label {
-    margin: 0 0 0.4rem;
-    color: #65d6ad;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-}
-.status-chip,
-.request-state,
-.request-expiry {
-    color: #b7cbd6;
-    font-size: 0.8rem;
-}
-.request-state-online,
-.request-state-connected {
-    color: #9be7cc;
-}
-.request-state-offline,
-.request-state-reconnecting {
-    color: #f5d7a0;
-}
-.status-dot {
-    display: inline-block;
-    width: 0.5rem;
-    height: 0.5rem;
-    margin-right: 0.35rem;
-    border-radius: 50%;
-    background: currentColor;
-    vertical-align: 0.05em;
-}
-.inline-message {
-    margin: 1rem 0 0;
-    padding: 0.75rem 0.9rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.65rem;
-    color: #b7cbd6;
-    line-height: 1.45;
-}
-.inline-message-error {
-    border-color: #9b4f55;
-    color: #ffb4af;
-}
-.inline-message-success {
-    border-color: #387d6e;
-    color: #9be7cc;
-}
-.inline-message-warning {
-    border-color: #96723c;
-    color: #f5d7a0;
-}
-.transfer-create {
-    display: grid;
-    grid-template-columns: 1fr minmax(10rem, 15rem) auto;
-    align-items: end;
-    gap: 1rem;
-    margin-top: 1.5rem;
-    padding: 1rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.85rem;
-    background: rgb(11 23 32 / 45%);
-}
-.transfer-create strong {
-    display: block;
-}
-.transfer-create select,
-.transfer-create input {
-    width: 100%;
-    min-height: 2.5rem;
-    padding: 0.55rem 0.7rem;
-    border: 1px solid #477082;
-    border-radius: 0.55rem;
-    color: #e5eef5;
-    background: #102935;
-}
-.transfer-group {
-    margin-top: 1.75rem;
-}
-.transfer-group-heading {
-    align-items: center;
-    margin-bottom: 0.8rem;
-}
-.transfer-list {
-    display: grid;
-    gap: 0.8rem;
-}
-.transfer-card {
-    padding: 1rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.85rem;
-    background: rgb(11 23 32 / 45%);
-}
-.transfer-copy {
-    margin: 0.75rem 0 0;
-    font-size: 0.92rem;
-}
-.request-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.65rem;
-    margin-top: 1rem;
-}
-.button {
-    min-height: 2.5rem;
-    padding: 0.55rem 0.9rem;
-    border: 1px solid transparent;
-    border-radius: 0.55rem;
-    color: #0b1720;
+button,
+input,
+select {
     font: inherit;
-    font-weight: 700;
-    cursor: pointer;
-}
-.button:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-}
-.button-primary {
-    background: #65d6ad;
-}
-.button-secondary,
-.button-small {
-    border-color: #477082;
-    color: #e5eef5;
-    background: transparent;
-}
-.button-danger {
-    border-color: #9b4f55;
-    color: #ffb4af;
-    background: transparent;
-}
-.button-small {
-    min-height: 2rem;
-    padding: 0.35rem 0.65rem;
-    font-size: 0.85rem;
-}
-.empty-state {
-    padding: 1.25rem;
-    border: 1px dashed #2e5263;
-    border-radius: 0.75rem;
-    color: #b7cbd6;
-    text-align: center;
-}
-.empty-glyph {
-    display: block;
-    color: #65d6ad;
-    font-size: 1.5rem;
 }
 
-.app-frame {
-    width: min(100%, 68rem);
+button {
+    touch-action: manipulation;
+}
+
+code {
+    font-family: 'Cascadia Mono', Consolas, monospace;
+    font-size: 0.85em;
+}
+
+h1,
+h2,
+h3,
+p {
+    margin-top: 0;
+}
+
+h1 {
+    margin-bottom: 0.75rem;
+    color: var(--mail-ink);
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1.08;
+}
+
+h2,
+h3 {
+    color: var(--mail-ink);
+    font-weight: 600;
 }
 
 .app-shell {
-    width: min(100%, 68rem);
+    position: relative;
+    z-index: 1;
+    width: min(100%, 90rem);
     min-height: 100vh;
     margin: 0 auto;
-    padding: clamp(1.5rem, 5vw, 3rem) 1rem;
+    padding: 0 1.5rem 2rem;
 }
 
-.workspace-tabs {
+.app-shell::after {
+    position: absolute;
+    right: 1.5rem;
+    bottom: 1rem;
+    left: 1.5rem;
+    height: 1rem;
+    content: '';
+    background:
+        radial-gradient(circle at left center, var(--outlook-blue) 0 0.25rem, transparent 0.28rem),
+        radial-gradient(circle at right center, var(--outlook-blue) 0 0.25rem, transparent 0.28rem),
+        linear-gradient(
+                to right,
+                rgb(15 108 189 / 22%),
+                rgb(15 108 189 / 5%) 50%,
+                rgb(15 108 189 / 22%)
+            )
+            center / 100% 1px no-repeat;
+    pointer-events: none;
+}
+
+.site-header {
     display: flex;
-    width: min(100%, 52rem);
-    gap: 0.5rem;
-    margin: 0 auto 1rem;
-}
-
-.workspace-tab {
-    flex: 1;
-    min-height: 2.75rem;
-    padding: 0.65rem 0.9rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.7rem;
-    color: #b7cbd6;
-    font: inherit;
-    font-weight: 700;
-    background: rgb(14 33 44 / 72%);
-    cursor: pointer;
-}
-
-.workspace-tab-active {
-    border-color: #65d6ad;
-    color: #e5eef5;
-    box-shadow: inset 0 -2px #65d6ad;
-}
-
-.workspace-content {
-    width: min(100%, 52rem);
-    margin: 0 auto;
-}
-
-.app-footer {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 0.55rem;
-    width: min(100%, 52rem);
-    margin: 1rem auto 0;
-    color: #8fa9b7;
-    font-size: 0.8rem;
-    text-align: center;
-}
-
-.footer-link {
-    padding: 0;
-    border: 0;
-    color: #65d6ad;
-    font: inherit;
-    text-decoration: underline;
-    background: transparent;
-    cursor: pointer;
-}
-
-.app-header,
-.brand-lockup,
-.account-actions {
-    display: flex;
+    min-height: 3.5rem;
+    margin: 0 -1.5rem;
+    padding: 0 1.5rem;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
+    background: var(--outlook-blue);
 }
 
-.app-header {
-    width: min(100%, 52rem);
-    margin: 0 auto 2rem;
-}
-
-.brand-lockup {
-    justify-content: flex-start;
-}
-
-.brand-mark {
-    display: grid;
-    width: 2.5rem;
-    height: 2.5rem;
-    place-items: center;
-    border: 1px solid #65d6ad;
-    border-radius: 0.7rem;
-    color: #65d6ad;
-    font-size: 1.4rem;
-}
-
-.brand-kicker,
-.brand-name,
-.console-intro p,
-.console-footer,
-.account-help,
-.account-id-card p,
-.session-row span {
-    margin: 0;
-    color: #b7cbd6;
-}
-
-.brand-kicker {
-    font-size: 0.7rem;
-    letter-spacing: 0.11em;
-    text-transform: uppercase;
-}
-
-.brand-name {
-    margin-top: 0.2rem;
-    color: #e5eef5;
+.site-brand,
+.privacy-link {
+    color: #fff;
     font-weight: 700;
+    text-decoration: none;
 }
 
-.console-intro,
-.view-tabs,
-.account-global-message,
+.site-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    letter-spacing: -0.03em;
+}
+
+.site-logo {
+    display: block;
+    width: 1.4rem;
+    height: 1.4rem;
+}
+
+.privacy-link {
+    padding: 0.5rem 0;
+    font-size: 0.85rem;
+}
+
+.privacy-link:hover {
+    color: #fff;
+    text-decoration: underline;
+    text-underline-offset: 0.25rem;
+}
+
 .account-panel,
-.console-footer {
-    width: min(100%, 52rem);
+.account-global-message {
+    width: min(100%, 56rem);
     margin-right: auto;
     margin-left: auto;
 }
 
-.console-intro {
-    margin-bottom: 1.5rem;
+.account-panel {
+    padding: clamp(1.5rem, 5vw, 3rem);
+    border: 1px solid var(--mail-line);
+    border-radius: 0.5rem;
+    background: var(--mail-paper);
 }
 
-.console-intro h1 {
-    max-width: 22ch;
+.auth-stage {
+    display: grid;
+    min-height: calc(100vh - 16rem);
+    place-items: center;
 }
 
-.console-intro p:last-child {
-    max-width: 44rem;
-    margin-top: 1rem;
+.auth-hero {
+    display: grid;
+    width: min(100%, 52rem);
+    justify-items: center;
+    padding: 3rem 0 6rem;
+    text-align: center;
+}
+
+.hero-title {
+    position: relative;
+    isolation: isolate;
+    margin: 0;
+    color: #17243b;
+    font-size: clamp(4.25rem, 11vw, 8.25rem);
+    font-weight: 750;
+    letter-spacing: -0.045em;
+    line-height: 0.92;
+}
+
+.hero-arrow {
+    position: absolute;
+    right: -0.32em;
+    bottom: -0.25em;
+    left: -0.08em;
+    z-index: -1;
+    width: calc(100% + 0.4em);
+    height: auto;
+    overflow: visible;
+    fill: none;
+    stroke: var(--outlook-blue);
+    stroke-linecap: round;
+    stroke-width: 8;
+}
+
+.hero-arrow-head {
+    fill: var(--outlook-blue);
+    stroke: none;
+}
+
+.hero-description {
+    max-width: 37rem;
+    margin: 1.6rem auto 0;
+    color: #44546a;
+    font-size: clamp(1rem, 2vw, 1.2rem);
+    line-height: 1.6;
+}
+
+.auth-pane {
+    width: min(100%, 29rem);
+    margin-top: 2rem;
+}
+
+.auth-home {
+    width: min(100%, 29rem);
+    padding: 0.9rem;
+    border-color: #c8dff0;
+    border-radius: 0.45rem;
+    background: rgb(255 255 255 / 82%);
+}
+
+.panel-heading p,
+.empty-copy,
+.transfer-copy,
+.account-tools > p,
+.empty-state p {
+    color: var(--mail-muted);
     line-height: 1.55;
 }
 
-.view-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-}
-
-.tab {
-    min-height: 4rem;
-    padding: 0.7rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.7rem;
-    color: #b7cbd6;
-    font: inherit;
-    font-weight: 700;
-    text-align: left;
-    background: rgb(14 33 44 / 72%);
-    cursor: pointer;
-}
-
-.tab span {
+.section-kicker,
+.request-label {
     display: block;
-    margin-top: 0.35rem;
-    color: #8fa9b7;
-    font-size: 0.75rem;
-    font-weight: 400;
-}
-
-.tab-active {
-    border-color: #65d6ad;
-    color: #e5eef5;
-    box-shadow: inset 0 -2px #65d6ad;
-}
-
-.sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-}
-
-.account-panel {
-    padding: clamp(1.5rem, 5vw, 2.5rem);
-    border: 1px solid #2e5263;
-    border-radius: 1.25rem;
-    background: rgb(14 33 44 / 92%);
-    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 24%);
+    margin: 0 0 0.45rem;
+    color: var(--outlook-blue);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
 
 .account-form {
     display: grid;
-    gap: 1rem;
+    gap: 0.75rem;
     margin-top: 1.5rem;
 }
 
+.auth-option {
+    grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0.4rem;
+    border: 1px solid var(--mail-line-strong);
+    border-radius: 0.25rem;
+    background: #fff;
+    transition:
+        border-color 150ms ease,
+        box-shadow 150ms ease,
+        transform 150ms ease;
+}
+
+.auth-option:focus-within {
+    border-color: var(--outlook-blue);
+    box-shadow: inset 0.2rem 0 var(--outlook-blue);
+    transform: translateX(0.15rem);
+}
+
+.auth-option-mark {
+    display: grid;
+    width: 2.25rem;
+    height: 2.25rem;
+    place-items: center;
+    border-radius: 0.2rem;
+    color: var(--outlook-blue);
+    font-weight: 700;
+    background: #e5f1fb;
+}
+
+.auth-home .auth-option input {
+    min-height: 2.5rem;
+    padding: 0.5rem 0.2rem;
+    border: 0;
+    outline: 0;
+    background: transparent;
+}
+
+.auth-home .button {
+    min-height: 2.5rem;
+    padding: 0.5rem 0.7rem;
+}
+
 .account-form label,
-.device-rename-form label,
-.account-panel > label {
+.device-name-field {
     display: grid;
     gap: 0.4rem;
-    color: #b7cbd6;
-    font-size: 0.9rem;
+    color: var(--mail-ink);
+    font-size: 0.86rem;
     font-weight: 600;
 }
 
 .account-form input,
-.device-rename-form input,
-.account-panel > label input {
+.current-device-actions input,
+.device-name-editor input {
     width: 100%;
-    min-height: 2.5rem;
-    padding: 0.55rem 0.7rem;
-    border: 1px solid #477082;
-    border-radius: 0.55rem;
-    color: #e5eef5;
-    font: inherit;
-    background: #102935;
+    min-height: 2.75rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--mail-line-strong);
+    border-radius: 0.2rem;
+    color: var(--mail-ink);
+    background: var(--mail-paper);
 }
 
-.account-help {
-    margin-top: 1rem;
+.account-form input::placeholder {
+    color: #929292;
+}
+
+.auth-divider {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 0.8rem;
+    margin: 0.7rem 0;
+    color: var(--mail-muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+    height: 1px;
+    content: '';
+    background: var(--mail-line);
+}
+
+.device-name-field {
+    margin-top: 0.5rem;
+}
+
+.privacy-page {
+    width: min(100%, 56rem);
+    margin: clamp(3rem, 8vh, 6rem) auto 4rem;
+}
+
+.privacy-heading {
+    max-width: 44rem;
+}
+
+.privacy-heading h1 {
+    max-width: 12ch;
+    font-size: clamp(3rem, 8vw, 6rem);
+    letter-spacing: -0.06em;
+}
+
+.privacy-section p,
+.privacy-spec dd {
+    color: var(--mail-muted);
+    line-height: 1.65;
+}
+
+.privacy-diagram {
+    margin: 2.5rem 0 3rem;
+    padding: 1.25rem;
+    border: 1px solid #b8d6ed;
+    background: rgb(255 255 255 / 58%);
+}
+
+.diagram-lane-label {
+    margin: 0 0 1rem;
+    color: var(--outlook-blue-pressed);
+    font-family: Bahnschrift, 'Segoe UI Variable', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.diagram-path {
+    display: grid;
+    grid-template-columns: minmax(8rem, 1fr) minmax(12rem, 1.5fr) minmax(8rem, 1fr);
+    align-items: center;
+    gap: 1rem;
+}
+
+.diagram-node,
+.diagram-channel {
+    font-family: Bahnschrift, 'Segoe UI Variable', sans-serif;
+}
+
+.diagram-node {
+    display: grid;
+    gap: 0.2rem;
+    padding: 1rem;
+    border: 1px solid var(--mail-line-strong);
+    background: var(--mail-paper);
+}
+
+.diagram-node span,
+.diagram-channel span {
+    color: var(--mail-muted);
+    font-size: 0.75rem;
+}
+
+.diagram-channel {
+    display: grid;
+    gap: 0.25rem;
+    color: var(--outlook-blue-pressed);
+    text-align: center;
+}
+
+.diagram-channel code {
+    color: var(--mail-ink);
+    font-size: 0.68rem;
+}
+
+.diagram-channel small {
+    color: var(--mail-muted);
+    font-size: 0.68rem;
+}
+
+.diagram-channel::before,
+.diagram-channel::after {
+    height: 1px;
+    content: '';
+    background: var(--outlook-blue);
+}
+
+.privacy-section {
+    display: grid;
+    grid-template-columns: minmax(9rem, 0.35fr) minmax(0, 1fr);
+    gap: 2rem;
+    margin-top: 2.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #b8d6ed;
+}
+
+.privacy-section h2 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.privacy-section > p {
+    grid-column: 2;
+    margin-bottom: 0;
+}
+
+.privacy-spec {
+    grid-column: 2;
+    margin: 0;
+}
+
+.privacy-spec div {
+    display: grid;
+    grid-template-columns: minmax(8rem, 0.35fr) minmax(0, 1fr);
+    gap: 1rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid rgb(15 108 189 / 12%);
+}
+
+.privacy-spec dt {
+    color: var(--mail-ink);
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.privacy-spec dd {
+    margin: 0;
     font-size: 0.9rem;
 }
 
-.account-help button {
-    padding: 0;
-    border: 0;
-    color: #65d6ad;
-    font: inherit;
-    text-decoration: underline;
-    background: transparent;
-    cursor: pointer;
+.privacy-boundary {
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid #b8d6ed;
 }
 
-.device-login {
-    margin-top: 1.5rem;
-    padding-top: 1rem;
-    border-top: 1px solid #2e5263;
-    color: #b7cbd6;
+.home-guide {
+    width: min(100%, 70rem);
+    margin: 0 auto 2.5rem;
+    font-family: Bahnschrift, 'Segoe UI Variable', sans-serif;
 }
 
-.device-login summary {
-    color: #e5eef5;
-    font-weight: 700;
-    cursor: pointer;
+.home-guide > .section-kicker {
+    font-family: 'Century Gothic', Futura, 'Trebuchet MS', sans-serif;
+    text-align: center;
 }
 
-.device-login p {
-    line-height: 1.5;
-}
-
-.account-id-card {
+.guide-steps {
     display: grid;
-    gap: 0.35rem;
-    margin-top: 1.5rem;
-    padding: 1rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.75rem;
-    background: rgb(11 23 32 / 45%);
+    grid-template-columns: repeat(3, 1fr);
+    margin: 0;
+    padding: 0;
+    border: 1px solid rgb(15 108 189 / 18%);
+    list-style: none;
+    background: rgb(255 255 255 / 58%);
 }
 
-.account-id-card code {
-    overflow-wrap: anywhere;
-    color: #e5eef5;
+.guide-steps li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.9rem;
+    padding: 1.15rem 1.25rem;
 }
 
-.account-id-card p {
+.guide-steps li + li {
+    border-left: 1px solid rgb(15 108 189 / 18%);
+}
+
+.guide-steps span {
+    color: var(--outlook-blue);
+    font-family: 'Century Gothic', Futura, 'Trebuchet MS', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.guide-steps strong {
+    display: block;
+    color: var(--mail-ink);
+}
+
+.guide-steps p {
+    margin: 0.3rem 0 0;
+    color: var(--mail-muted);
     font-size: 0.85rem;
     line-height: 1.45;
 }
 
-.account-section {
-    margin-top: 1.75rem;
+.account-tools summary {
+    color: var(--mail-ink);
+    font-weight: 600;
+    cursor: pointer;
 }
 
-.device-list,
-.session-list {
-    display: grid;
-    gap: 0.8rem;
+.button {
+    min-height: 2.5rem;
+    padding: 0.55rem 0.9rem;
+    border: 1px solid transparent;
+    border-radius: 0.2rem;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease;
+}
+
+.button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+}
+
+.button-primary {
+    color: #fff;
+    background: var(--outlook-blue);
+}
+
+.button-primary:not(:disabled):hover {
+    background: var(--outlook-blue-hover);
+}
+
+.button-secondary,
+.button-small {
+    border-color: var(--mail-line-strong);
+    color: var(--mail-ink);
+    background: var(--mail-paper);
+}
+
+.button-secondary:not(:disabled):hover,
+.button-small:not(:disabled):hover,
+.button-quiet:not(:disabled):hover {
+    background: #f0f6fc;
+}
+
+.button-quiet {
+    color: var(--outlook-blue);
+    background: transparent;
+}
+
+.button-danger,
+.button-danger-text {
+    color: var(--danger);
+}
+
+.button-danger {
+    border-color: #f1b8be;
+    background: #fff;
+}
+
+.button-small {
+    min-height: 2rem;
+    padding: 0.35rem 0.65rem;
+    font-size: 0.8rem;
+}
+
+.panel-heading-row,
+.transfer-group-heading,
+.trusted-request-heading,
+.current-device,
+.current-device-actions,
+.device-actions,
+.request-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.panel-heading-row,
+.transfer-group-heading,
+.trusted-request-heading,
+.current-device {
+    justify-content: space-between;
+}
+
+.dashboard-heading {
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+}
+
+.dashboard-heading h1 {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+}
+
+.dashboard-heading p:last-child {
+    margin-bottom: 0;
+}
+
+.current-device {
+    padding: 0.9rem 1rem;
+    border: 1px solid #cfe4f6;
+    border-left: 0.25rem solid var(--outlook-blue);
+    background: #f5faff;
+}
+
+.current-device strong {
+    display: block;
+}
+
+.current-device-actions {
+    justify-content: flex-end;
+}
+
+.current-device-actions input {
+    width: min(15rem, 32vw);
+    min-height: 2.5rem;
+}
+
+.account-section {
+    margin-top: 2rem;
+}
+
+.transfer-group-heading {
+    align-items: flex-end;
+    margin-bottom: 0.65rem;
+}
+
+.transfer-group-heading h2,
+.transfer-group-heading h3 {
+    margin-bottom: 0;
+}
+
+.request-expiry,
+.request-state {
+    color: var(--mail-muted);
+    font-size: 0.78rem;
+}
+
+.device-list {
+    position: relative;
+    border-top: 1px solid var(--mail-line);
+}
+
+.device-list::before {
+    position: absolute;
+    top: 1.6rem;
+    bottom: 1.6rem;
+    left: 0.4rem;
+    width: 1px;
+    content: '';
+    background: #cfe4f6;
 }
 
 .device-card {
-    padding: 1rem;
-    border: 1px solid #2e5263;
-    border-radius: 0.85rem;
-    background: rgb(11 23 32 / 45%);
-}
-
-.device-card-muted {
-    opacity: 0.62;
-}
-
-.device-card h3 {
-    margin: 0;
-}
-
-.device-card code {
-    overflow-wrap: anywhere;
-}
-
-.device-rename-form {
+    position: relative;
     display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: end;
-    gap: 0.65rem;
-    margin-top: 1rem;
+    grid-template-columns: 1rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 1.15rem 0;
+    border-bottom: 1px solid var(--mail-line);
+    background: var(--mail-paper);
 }
 
-.device-rename-form + .button-danger {
+.device-card-muted .device-content {
+    opacity: 0.55;
+}
+
+.device-presence {
+    z-index: 1;
+    width: 0.55rem;
+    height: 0.55rem;
     margin-top: 0.75rem;
+    border: 2px solid var(--mail-paper);
+    border-radius: 50%;
+    outline: 1px solid var(--mail-line-strong);
+    background: #bdbdbd;
 }
 
-.session-row {
+.device-presence-online {
+    outline-color: var(--presence);
+    background: var(--presence);
+}
+
+.device-name-editor {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.85rem 0;
-    border-bottom: 1px solid #2e5263;
+    gap: 0.5rem;
 }
 
-.session-row div {
-    display: grid;
-    gap: 0.25rem;
+.device-name-editor input {
+    min-height: auto;
+    padding: 0;
+    border-color: transparent;
+    font-size: 1rem;
+    font-weight: 600;
+    background: transparent;
 }
 
-.session-row span {
-    font-size: 0.85rem;
+.device-name-editor input:focus {
+    min-height: 2.25rem;
+    padding: 0.35rem 0.5rem;
+    border-color: var(--outlook-blue);
+    background: #fff;
+}
+
+.rename-link {
+    padding: 0;
+    border: 0;
+    color: var(--outlook-blue);
+    font-size: 0.75rem;
+    background: transparent;
+    cursor: pointer;
+}
+
+.device-actions {
+    margin-top: 0.8rem;
 }
 
 .request-state-active {
-    color: #9be7cc;
+    color: var(--presence);
 }
 
 .request-state-revoked,
-.request-state-revoked {
-    color: #f5d7a0;
+.request-state-degraded,
+.request-state-reconnecting {
+    color: var(--warning);
+}
+
+.request-state-failed,
+.request-state-disconnected,
+.request-state-unavailable {
+    color: var(--danger);
+}
+
+.request-state-connected,
+.request-state-ready {
+    color: var(--presence);
+}
+
+.status-dot {
+    display: inline-block;
+    width: 0.45rem;
+    height: 0.45rem;
+    margin-right: 0.3rem;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.account-tools {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--mail-line);
+    color: var(--mail-muted);
+    font-size: 0.85rem;
+}
+
+.account-tools > p {
+    margin: 0.75rem 0;
+}
+
+.linking-code {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin: 1rem 0;
+    color: var(--mail-ink);
+}
+
+.linking-code strong {
+    color: var(--outlook-blue);
+    font-size: 1.75rem;
+    letter-spacing: 0.16em;
+}
+
+.account-id-card {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+    padding: 1rem;
+    border: 1px solid var(--mail-line);
+    background: #fafafa;
+}
+
+.account-id-card div {
+    display: grid;
+    gap: 0.2rem;
+}
+
+.account-help {
+    margin: 1rem 0 0;
+    color: var(--mail-muted);
+    font-size: 0.85rem;
+}
+
+.account-help button,
+.footer-link {
+    padding: 0;
+    border: 0;
+    color: var(--outlook-blue);
+    background: transparent;
+    cursor: pointer;
+}
+
+.inline-message {
+    margin-top: 1rem;
+    padding: 0.75rem 0.9rem;
+    border-left: 0.2rem solid var(--outlook-blue);
+    color: var(--mail-ink);
+    line-height: 1.45;
+    background: #f5faff;
+}
+
+.account-global-message {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    z-index: 5;
+    width: min(calc(100% - 3rem), 25rem);
+    margin: 0;
+}
+
+.inline-message-success {
+    border-color: var(--presence);
+    background: #f1faf1;
+}
+
+.inline-message-error {
+    border-color: var(--danger);
+    color: #7a0712;
+    background: #fff5f6;
+}
+
+.inline-message-neutral {
+    border-color: var(--mail-line-strong);
+    background: #fafafa;
+}
+
+.transfer-panel {
+    margin-top: 1rem;
+}
+
+.transfer-panel-embedded {
+    padding-top: 1.5rem;
+}
+
+.transfer-create {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1rem;
+    margin-top: 1.25rem;
+    padding: 1rem;
+    border: 1px solid var(--mail-line);
+    background: #fafafa;
+}
+
+.transfer-group {
+    margin-top: 1rem;
+}
+
+.transfer-panel-embedded .transfer-group:first-of-type {
+    margin-top: 0;
+}
+
+.transfer-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.transfer-card {
+    padding: 1rem;
+    border: 1px solid var(--mail-line);
+    border-left: 0.2rem solid var(--outlook-blue);
+    background: var(--mail-paper);
+}
+
+.transfer-card h3 {
+    margin-bottom: 0;
+    font-size: 1rem;
+}
+
+.transfer-copy {
+    margin: 0.75rem 0 0;
+    font-size: 0.88rem;
+}
+
+.transfer-progress {
+    margin-top: 1rem;
+}
+
+progress {
+    height: 0.4rem;
+    accent-color: var(--outlook-blue);
+}
+
+.request-actions {
+    flex-wrap: wrap;
+    margin-top: 0.85rem;
+}
+
+.empty-state,
+.empty-panel {
+    color: var(--mail-muted);
+    text-align: center;
+}
+
+.empty-state {
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--mail-line);
+}
+
+.empty-state p {
+    margin: 0.35rem 0 0;
+}
+
+.empty-glyph {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--outlook-blue);
+    font-size: 1.4rem;
 }
 
 .dialog-backdrop {
@@ -615,49 +958,139 @@ dd {
     inset: 0;
     display: grid;
     place-items: center;
-    padding: 1.5rem;
-    background: rgb(3 10 14 / 76%);
+    padding: 1.25rem;
+    background: rgb(0 0 0 / 42%);
 }
 
 .confirm-dialog {
     width: min(100%, 30rem);
     padding: 1.5rem;
-    border: 1px solid #477082;
-    border-radius: 0.9rem;
-    background: #0e212c;
-    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 40%);
+    border: 1px solid var(--mail-line-strong);
+    border-radius: 0.35rem;
+    background: var(--mail-paper);
 }
 
 .confirm-dialog h2 {
-    margin: 0;
+    margin-bottom: 0.75rem;
 }
 
-.confirm-dialog > p:not(.section-kicker) {
-    color: #b7cbd6;
-    line-height: 1.5;
-}
-
-.console-footer {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-top: 1rem;
-    font-size: 0.8rem;
+.sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
 }
 
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-summary:focus-visible {
-    outline: 3px solid #f5d7a0;
-    outline-offset: 2px;
+summary:focus-visible,
+a:focus-visible {
+    outline: 0.15rem solid var(--outlook-blue);
+    outline-offset: 0.15rem;
+}
+
+@media (max-width: 680px) {
+    .app-shell {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+    }
+
+    .site-header {
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+    }
+
+    .account-panel {
+        padding: 1.25rem;
+    }
+
+    .account-global-message {
+        right: 0.75rem;
+        bottom: 0.75rem;
+        width: calc(100% - 1.5rem);
+    }
+
+    .auth-home {
+        padding: 0.75rem;
+    }
+
+    .transfer-create {
+        grid-template-columns: 1fr;
+    }
+
+    .auth-stage {
+        min-height: 0;
+    }
+
+    .auth-hero {
+        padding-top: 4rem;
+    }
+
+    .privacy-section {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+
+    .diagram-path {
+        grid-template-columns: 1fr;
+    }
+
+    .privacy-section > p,
+    .privacy-spec {
+        grid-column: 1;
+    }
+
+    .privacy-spec div {
+        grid-template-columns: 1fr;
+        gap: 0.35rem;
+    }
+
+    .guide-steps {
+        grid-template-columns: 1fr;
+    }
+
+    .guide-steps li + li {
+        border-top: 1px solid rgb(15 108 189 / 18%);
+        border-left: 0;
+    }
+
+    .panel-heading-row,
+    .transfer-group-heading,
+    .current-device {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .current-device-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .current-device-actions input {
+        grid-column: 1 / -1;
+        width: 100%;
+    }
+
+    .device-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .linking-code {
+        align-items: flex-start;
+        flex-direction: column;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    html {
-        scroll-behavior: auto;
-    }
-
     *,
     *::before,
     *::after {
@@ -665,25 +1098,5 @@ summary:focus-visible {
         animation-iteration-count: 1 !important;
         scroll-behavior: auto !important;
         transition-duration: 0.01ms !important;
-    }
-}
-
-@media (max-width: 680px) {
-    .view-tabs {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .transfer-create {
-        grid-template-columns: 1fr;
-    }
-    .panel-heading-row,
-    .trusted-request-heading,
-    .transfer-group-heading {
-        flex-direction: column;
-    }
-    .device-rename-form {
-        grid-template-columns: 1fr;
-    }
-    .console-footer {
-        flex-direction: column;
     }
 }

@@ -1,12 +1,10 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 import {
     completeDeviceLink,
-    completeDeviceLogin,
     completeRegistration,
     issueDeviceLinkingChallenge,
     issueDeviceLinkingOtp,
-    issueDeviceLoginChallenge,
     issueRegistrationChallenge,
     listDevices,
     logoutDevice,
@@ -14,7 +12,6 @@ import {
     startOtp,
     verifyOtp,
     type DeviceLinkingOtp,
-    type DeviceLoginChallenge,
     type OtpBootstrap,
     type RegistrationChallenge,
 } from './accountApi';
@@ -30,9 +27,10 @@ import {
     DeviceStorageUnavailableError,
     getDefaultDeviceLabel,
     getOrCreateDeviceIdentity,
-    loadDeviceIdentity,
     type DeviceIdentity,
 } from './deviceIdentity';
+import TransferConsole, { type TransferConsoleHandle } from './TransferConsole';
+import { listOnlineDevices } from './transferApi';
 
 type AccountView =
     | 'checking'
@@ -42,12 +40,8 @@ type AccountView =
     | 'verified'
     | 'linking'
     | 'challenge'
-    | 'login-challenge'
     | 'authenticated'
     | 'error';
-
-const ACCOUNT_ID_PATTERN =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function formatFingerprint(value: string): string {
     return value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-12)}` : value;
@@ -78,19 +72,23 @@ function errorMessage(error: unknown, fallback: string): string {
     return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function deviceStatus(device: AuthenticatedDevice): string {
-    return device.status === 'active'
-        ? 'Active'
-        : device.status === 'revoked'
-          ? 'Revoked'
-          : 'Logged out';
+function deviceStatus(device: AuthenticatedDevice, online: boolean): string {
+    if (device.status !== 'active') {
+        return 'Logged out';
+    }
+    return online ? 'Online' : 'Offline';
 }
 
-function sortedDevices(devices: AuthenticatedDevice[]): AuthenticatedDevice[] {
+// eslint-disable-next-line react-refresh/only-export-components
+export function sortDevicesByPresence(
+    devices: AuthenticatedDevice[],
+    onlineDeviceIds: Set<string>,
+): AuthenticatedDevice[] {
     return [...devices].sort((left, right) => {
-        const activeDifference =
-            Number(right.status === 'active') - Number(left.status === 'active');
-        return activeDifference || right.last_seen_at.localeCompare(left.last_seen_at);
+        const onlineDifference =
+            Number(onlineDeviceIds.has(right.device_id)) -
+            Number(onlineDeviceIds.has(left.device_id));
+        return onlineDifference || right.last_seen_at.localeCompare(left.last_seen_at);
     });
 }
 
@@ -150,27 +148,32 @@ function AccountConsole() {
     const [view, setView] = useState<AccountView>('checking');
     const [session, setSession] = useState<CurrentSession | null>(null);
     const [devices, setDevices] = useState<AuthenticatedDevice[]>([]);
+    const [onlineDeviceIds, setOnlineDeviceIds] = useState<Set<string>>(new Set());
     const [email, setEmail] = useState('');
     const [otp, setOtp] = useState('');
     const [linkingCode, setLinkingCode] = useState('');
-    const [accountId, setAccountId] = useState('');
     const [label, setLabel] = useState(() => getDefaultDeviceLabel());
     const [bootstrap, setBootstrap] = useState<OtpBootstrap | null>(null);
     const [challenge, setChallenge] = useState<RegistrationChallenge | null>(null);
-    const [loginChallenge, setLoginChallenge] = useState<DeviceLoginChallenge | null>(null);
     const [identity, setIdentity] = useState<DeviceIdentity | null>(null);
     const [linkingOtp, setLinkingOtp] = useState<DeviceLinkingOtp | null>(null);
     const [busy, setBusy] = useState(false);
     const [busyDeviceId, setBusyDeviceId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    const [transferReady, setTransferReady] = useState(false);
+    const transferRef = useRef<TransferConsoleHandle>(null);
 
     const refresh = useCallback(async () => {
         try {
-            const current = await getCurrentSession();
-            const nextDevices = await listDevices();
+            const [current, nextDevices, onlineDevices] = await Promise.all([
+                getCurrentSession(),
+                listDevices(),
+                listOnlineDevices(),
+            ]);
             setSession(current);
             setDevices(nextDevices);
+            setOnlineDeviceIds(new Set(onlineDevices.map((device) => device.device_id)));
             setError(null);
             setView('authenticated');
         } catch (refreshError) {
@@ -181,6 +184,7 @@ function AccountConsole() {
                 clearApiSession();
                 setSession(null);
                 setDevices([]);
+                setOnlineDeviceIds(new Set());
                 setView('signed-out');
                 return;
             }
@@ -192,6 +196,14 @@ function AccountConsole() {
     useEffect(() => {
         void refresh();
     }, [refresh]);
+
+    useEffect(() => {
+        if (view !== 'authenticated') {
+            return;
+        }
+        const interval = window.setInterval(() => void refresh(), 15_000);
+        return () => window.clearInterval(interval);
+    }, [refresh, view]);
 
     const run = async (action: () => Promise<void>, fallback: string) => {
         setBusy(true);
@@ -263,25 +275,6 @@ function AccountConsole() {
         }, 'The device-linking code is invalid or expired.');
     };
 
-    const handleStartLogin = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        const nextAccountId = accountId.trim();
-        if (!ACCOUNT_ID_PATTERN.test(nextAccountId)) {
-            setError('Enter the account ID shown on a signed-in device.');
-            return;
-        }
-        void run(async () => {
-            const nextIdentity = await loadDeviceIdentity();
-            if (!nextIdentity) {
-                throw new DeviceKeyMissingError('This browser does not have a trusted device key.');
-            }
-            const nextChallenge = await issueDeviceLoginChallenge(nextAccountId, nextIdentity);
-            setIdentity(nextIdentity);
-            setLoginChallenge(nextChallenge);
-            setView('login-challenge');
-        }, 'This browser key could not start a sign-in.');
-    };
-
     const completeChallenge = () => {
         if (!challenge || !identity) {
             return;
@@ -301,23 +294,6 @@ function AccountConsole() {
             setIdentity(null);
             await refresh();
         }, 'The browser key proof could not be completed.');
-    };
-
-    const completeLogin = () => {
-        if (!loginChallenge || !identity) {
-            return;
-        }
-        void run(async () => {
-            const result = await completeDeviceLogin(loginChallenge, identity);
-            setNotice(
-                result.fallback
-                    ? 'Email fallback signed in this browser.'
-                    : 'Signed in with this browser key.',
-            );
-            setLoginChallenge(null);
-            setIdentity(null);
-            await refresh();
-        }, 'This browser key could not sign you in.');
     };
 
     const createLinkingCode = () => {
@@ -520,85 +496,56 @@ function AccountConsole() {
                 busy={busy}
                 onConfirm={completeChallenge}
             />
-        ) : view === 'login-challenge' && loginChallenge ? (
-            <section className="account-panel" aria-labelledby="login-challenge-title">
-                <div className="panel-heading">
-                    <p className="section-kicker">Saved browser key</p>
-                    <h2 id="login-challenge-title">Confirm this sign-in</h2>
-                    <p>Sign the fresh challenge with this browser's non-exportable key.</p>
-                </div>
-                <dl className="account-id-card">
-                    <div>
-                        <dt>Account ID</dt>
-                        <dd>
-                            <code>{loginChallenge.account_id}</code>
-                        </dd>
-                    </div>
-                    <div>
-                        <dt>Challenge</dt>
-                        <dd>{`Expires ${formatDate(loginChallenge.expires_at)}`}</dd>
-                    </div>
-                </dl>
-                <div className="request-actions">
-                    <button
-                        className="button button-primary"
-                        type="button"
-                        onClick={completeLogin}
-                        disabled={busy}
-                    >
-                        {busy ? 'Signing in…' : 'Sign in with this key'}
-                    </button>
-                </div>
-            </section>
         ) : (
-            <section className="account-panel" aria-labelledby="access-title">
-                <div className="panel-heading">
-                    <p className="section-kicker">Account access</p>
-                    <h2 id="access-title">Sign in on this browser</h2>
-                    <p>
-                        Use a saved device key, link this browser from an active device, or use
-                        email fallback.
-                    </p>
-                </div>
-                <div className="request-actions">
-                    <button
-                        className="button button-primary"
-                        type="button"
-                        onClick={() => setView('email')}
+            <section className="account-panel auth-home" aria-label="Account access">
+                <form className="account-form auth-option" onSubmit={handleStartOtp}>
+                    <label className="sr-only" htmlFor="account-email-home">
+                        Email address
+                    </label>
+                    <span className="auth-option-mark" aria-hidden="true">
+                        @
+                    </span>
+                    <input
+                        id="account-email-home"
+                        type="email"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        autoComplete="email"
+                        placeholder="Email address"
+                        required
                         disabled={busy}
-                    >
-                        Use email instead?
+                    />
+                    <button className="button button-primary" type="submit" disabled={busy}>
+                        {busy ? 'Sending…' : 'Continue'}
                     </button>
-                    <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={() => setView('linking')}
-                        disabled={busy}
-                    >
-                        I have a linking code
-                    </button>
+                </form>
+                <div className="auth-divider" role="separator">
+                    <span>or</span>
                 </div>
-                <details className="device-login">
-                    <summary>Sign in with a saved browser key</summary>
-                    <form className="account-form" onSubmit={handleStartLogin}>
-                        <label htmlFor="login-account-id">
-                            Account ID
-                            <input
-                                id="login-account-id"
-                                type="text"
-                                value={accountId}
-                                onChange={(event) => setAccountId(event.target.value)}
-                                autoComplete="username"
-                                placeholder="Account ID from a trusted device"
-                                required
-                                disabled={busy}
-                            />
-                        </label>
-                        <button className="button button-secondary" type="submit" disabled={busy}>
-                            {busy ? 'Checking…' : 'Start key sign-in'}
-                        </button>
-                    </form>
-                </details>
+                <form className="account-form auth-option" onSubmit={handleStartLinking}>
+                    <label className="sr-only" htmlFor="linking-code-home">
+                        One-time code from another device
+                    </label>
+                    <span className="auth-option-mark" aria-hidden="true">
+                        ↔
+                    </span>
+                    <input
+                        id="linking-code-home"
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        value={linkingCode}
+                        onChange={(event) => setLinkingCode(event.target.value)}
+                        minLength={6}
+                        maxLength={6}
+                        placeholder="Device code"
+                        required
+                        disabled={busy}
+                    />
+                    <button className="button button-secondary" type="submit" disabled={busy}>
+                        {busy ? 'Linking…' : 'Link'}
+                    </button>
+                </form>
             </section>
         );
 
@@ -613,7 +560,14 @@ function AccountConsole() {
     }
 
     if (view === 'authenticated' && session) {
-        const orderedDevices = sortedDevices(devices);
+        const currentDevice = devices.find((device) => device.device_id === session.device_id);
+        const orderedDevices = sortDevicesByPresence(
+            devices.filter((device) => device.device_id !== session.device_id),
+            onlineDeviceIds,
+        );
+        const onlineCount = orderedDevices.filter((device) =>
+            onlineDeviceIds.has(device.device_id),
+        ).length;
         return (
             <>
                 {error && (
@@ -632,130 +586,194 @@ function AccountConsole() {
                         {notice}
                     </p>
                 )}
-                <section className="account-panel" aria-labelledby="account-title">
-                    <div className="panel-heading panel-heading-row">
+                <section className="account-panel devices-panel" aria-labelledby="account-title">
+                    <div className="panel-heading panel-heading-row dashboard-heading">
                         <div>
-                            <p className="section-kicker">Trusted devices</p>
-                            <h2 id="account-title">Manage your account devices</h2>
-                            <p>
-                                Active devices can link another browser. Logged-out devices stay
-                                listed but cannot authenticate.
-                            </p>
+                            <p className="section-kicker">Your devices</p>
+                            <h1 id="account-title">Where do you want to send?</h1>
+                            <p>Online devices appear first. Presence refreshes automatically.</p>
                         </div>
                         <button
-                            className="button button-secondary"
+                            className="button button-quiet"
                             type="button"
                             onClick={() => void refresh()}
                             disabled={busy}
                         >
-                            Refresh
+                            Refresh now
                         </button>
                     </div>
-                    <div className="account-id-card">
-                        <strong>Account ID</strong>
-                        <code>{session.account_id}</code>
-                        <p>Share this ID only when signing in with a saved browser key.</p>
-                    </div>
-                    <div className="request-actions">
-                        <button
-                            className="button button-primary"
-                            type="button"
-                            onClick={createLinkingCode}
-                            disabled={busy}
-                        >
-                            {busy ? 'Creating…' : 'Create one-time linking code'}
-                        </button>
-                    </div>
-                    {linkingOtp && (
-                        <p className="inline-message inline-message-success" role="status">
-                            <strong>{linkingOtp.otp}</strong> · expires{' '}
-                            {formatDate(linkingOtp.expires_at)} · one use only
-                        </p>
+
+                    {currentDevice && (
+                        <div className="current-device" aria-label="Current device">
+                            <div>
+                                <span className="request-label">This device</span>
+                                <strong>{currentDevice.label}</strong>
+                            </div>
+                            <form
+                                className="current-device-actions"
+                                onSubmit={(event) => handleRename(currentDevice, event)}
+                            >
+                                <label className="sr-only" htmlFor="current-device-label">
+                                    Current device name
+                                </label>
+                                <input
+                                    id="current-device-label"
+                                    name="label"
+                                    type="text"
+                                    defaultValue={currentDevice.label}
+                                    maxLength={100}
+                                    disabled={busy}
+                                />
+                                <button
+                                    className="button button-secondary"
+                                    type="submit"
+                                    disabled={busy}
+                                >
+                                    Rename
+                                </button>
+                                <button
+                                    className="button button-quiet button-danger-text"
+                                    type="button"
+                                    onClick={() => handleLogoutDevice(currentDevice)}
+                                    disabled={busy}
+                                >
+                                    Log out
+                                </button>
+                            </form>
+                        </div>
                     )}
+
                     <div className="account-section" aria-labelledby="device-list-title">
                         <div className="transfer-group-heading">
                             <div>
-                                <p className="request-label">Device list</p>
-                                <h3 id="device-list-title">Active first, logged-out below</h3>
+                                <p className="request-label">Connected devices</p>
+                                <h2 id="device-list-title">Ready when you are</h2>
                             </div>
-                            <span className="request-expiry">{orderedDevices.length} devices</span>
+                            <span className="request-expiry">
+                                {onlineCount} online · {orderedDevices.length} total
+                            </span>
                         </div>
                         <div className="device-list">
+                            {orderedDevices.length === 0 && (
+                                <div className="empty-state">
+                                    <strong>No other devices yet</strong>
+                                    <p>
+                                        Create a one-time code, then enter it on your other device.
+                                    </p>
+                                </div>
+                            )}
                             {orderedDevices.map((device) => {
-                                const current = device.device_id === session.device_id;
-                                const active = device.status === 'active';
+                                const trusted = device.status === 'active';
+                                const online = trusted && onlineDeviceIds.has(device.device_id);
                                 return (
                                     <article
-                                        className={`device-card ${active ? '' : 'device-card-muted'}`}
+                                        className={`device-card ${online ? '' : 'device-card-muted'}`}
                                         key={device.device_id}
                                     >
-                                        <div className="trusted-request-heading">
-                                            <div>
-                                                <p className="request-label">
-                                                    {current ? 'This device' : 'Trusted device'}
-                                                </p>
-                                                <h3>{device.label}</h3>
-                                            </div>
-                                            <span
-                                                className={`request-state request-state-${active ? 'active' : 'revoked'}`}
-                                            >
-                                                {deviceStatus(device)}
-                                            </span>
-                                        </div>
-                                        <p className="transfer-copy">
-                                            Last seen {formatDate(device.last_seen_at)} · key{' '}
-                                            <code>{formatFingerprint(device.fingerprint)}</code>
-                                        </p>
-                                        {active && (
+                                        <span
+                                            className={`device-presence ${online ? 'device-presence-online' : ''}`}
+                                            aria-hidden="true"
+                                        />
+                                        <div className="device-content">
                                             <form
-                                                className="device-rename-form"
+                                                className="device-name-editor"
                                                 onSubmit={(event) => handleRename(device, event)}
                                             >
-                                                <label htmlFor={`device-label-${device.device_id}`}>
-                                                    Browser label
-                                                    <input
-                                                        id={`device-label-${device.device_id}`}
-                                                        name="label"
-                                                        type="text"
-                                                        defaultValue={device.label}
-                                                        maxLength={100}
-                                                        disabled={
-                                                            busy ||
-                                                            busyDeviceId === device.device_id
-                                                        }
-                                                    />
+                                                <label
+                                                    className="sr-only"
+                                                    htmlFor={`device-label-${device.device_id}`}
+                                                >
+                                                    Device name
                                                 </label>
+                                                <input
+                                                    id={`device-label-${device.device_id}`}
+                                                    name="label"
+                                                    type="text"
+                                                    defaultValue={device.label}
+                                                    maxLength={100}
+                                                    disabled={
+                                                        !trusted ||
+                                                        busy ||
+                                                        busyDeviceId === device.device_id
+                                                    }
+                                                />
+                                                {trusted && (
+                                                    <button
+                                                        className="rename-link"
+                                                        type="submit"
+                                                        disabled={busy}
+                                                    >
+                                                        Save name
+                                                    </button>
+                                                )}
+                                            </form>
+                                            <span
+                                                className={`request-state request-state-${online ? 'active' : 'revoked'}`}
+                                            >
+                                                {deviceStatus(device, online)} · Last seen{' '}
+                                                {formatDate(device.last_seen_at)}
+                                            </span>
+                                            <div className="device-actions">
+                                                <button
+                                                    className="button button-primary"
+                                                    type="button"
+                                                    onClick={() =>
+                                                        transferRef.current?.startTransfer(
+                                                            device.device_id,
+                                                        )
+                                                    }
+                                                    disabled={!online || !transferReady || busy}
+                                                >
+                                                    {!online
+                                                        ? 'Offline'
+                                                        : transferReady
+                                                          ? 'Transfer'
+                                                          : 'Connecting…'}
+                                                </button>
                                                 <button
                                                     className="button button-secondary"
-                                                    type="submit"
+                                                    type="button"
+                                                    onClick={() => handleLogoutDevice(device)}
                                                     disabled={
-                                                        busy || busyDeviceId === device.device_id
+                                                        !trusted ||
+                                                        busy ||
+                                                        busyDeviceId === device.device_id
                                                     }
                                                 >
-                                                    Save label
+                                                    {busyDeviceId === device.device_id
+                                                        ? 'Logging out…'
+                                                        : trusted
+                                                          ? 'Log out device'
+                                                          : 'Logged out'}
                                                 </button>
-                                            </form>
-                                        )}
-                                        {active && (
-                                            <button
-                                                className="button button-danger"
-                                                type="button"
-                                                onClick={() => handleLogoutDevice(device)}
-                                                disabled={busy || busyDeviceId === device.device_id}
-                                            >
-                                                {busyDeviceId === device.device_id
-                                                    ? 'Logging out…'
-                                                    : current
-                                                      ? 'Log out this device'
-                                                      : 'Log out remotely'}
-                                            </button>
-                                        )}
+                                            </div>
+                                        </div>
                                     </article>
                                 );
                             })}
                         </div>
                     </div>
+
+                    <details className="account-tools">
+                        <summary>Link another device</summary>
+                        <p>Create a six-digit code, then enter it on the new device.</p>
+                        <button
+                            className="button button-secondary"
+                            type="button"
+                            onClick={createLinkingCode}
+                            disabled={busy}
+                        >
+                            {busy ? 'Creating…' : 'Create one-time code'}
+                        </button>
+                        {linkingOtp && (
+                            <p className="linking-code" role="status">
+                                <strong>{linkingOtp.otp}</strong>
+                                <span>Expires {formatDate(linkingOtp.expires_at)}</span>
+                            </p>
+                        )}
+                    </details>
                 </section>
+                <TransferConsole ref={transferRef} embedded onReadyChange={setTransferReady} />
             </>
         );
     }
@@ -778,7 +796,42 @@ function AccountConsole() {
                     {notice}
                 </p>
             )}
-            {accessPanel}
+            <div className="auth-stage">
+                <section className="auth-hero" aria-labelledby="selfrelay-title">
+                    <h1 className="hero-title" id="selfrelay-title">
+                        SelfRelay
+                        <svg
+                            className="hero-arrow"
+                            viewBox="0 0 560 36"
+                            aria-hidden="true"
+                            focusable="false"
+                        >
+                            <defs>
+                                <marker
+                                    id="hero-arrow-tip"
+                                    viewBox="0 0 12 12"
+                                    refX="9.5"
+                                    refY="6"
+                                    markerWidth="3.5"
+                                    markerHeight="3.5"
+                                    orient="auto"
+                                    markerUnits="strokeWidth"
+                                >
+                                    <path className="hero-arrow-head" d="M0 0 L12 6 L0 12 Z" />
+                                </marker>
+                            </defs>
+                            <path
+                                d="M4 8 C 176 31 420 34 536 10"
+                                markerEnd="url(#hero-arrow-tip)"
+                            />
+                        </svg>
+                    </h1>
+                    <p className="hero-description">
+                        Secure end-to-end file transfers between your trusted devices.
+                    </p>
+                    <div className="auth-pane">{accessPanel}</div>
+                </section>
+            </div>
         </>
     );
 }
