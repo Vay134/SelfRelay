@@ -12,20 +12,24 @@ from .cleanup import (
     CleanupRepository,
     ExpiryCleanupRepository,
 )
+from .device_linking_otps import (
+    DeviceLinkingOtpRepository,
+    DeviceLinkingOtpStore,
+    InMemoryDeviceLinkingOtpRepository,
+)
 from .devices import DeviceRepository, InMemoryDeviceRepository, TrustedDeviceRepository
 from .models import (
     AccountRecord,
     AppUserRecord,
     DeviceChallengeRecord,
+    DeviceLinkingOtpRecord,
     DeviceRecord,
-    PairingRequestRecord,
     RateLimitBucketRecord,
     SecurityEventRecord,
     SessionRecord,
     TransferRequestRecord,
     WebSocketTicketRecord,
 )
-from .pairings import InMemoryPairingRequestRepository, PairingRepository, PairingRequestRepository
 from .rate_limits import PersistentRateLimiter, RateLimitBucketRepository, RateLimitRepository
 from .security_events import (
     InMemorySecurityEventRepository,
@@ -56,14 +60,14 @@ __all__ = [
     "DeviceChallengeRecord",
     "DeviceChallengeRepository",
     "InMemoryDeviceChallengeRepository",
+    "DeviceLinkingOtpRecord",
+    "DeviceLinkingOtpRepository",
+    "DeviceLinkingOtpStore",
+    "InMemoryDeviceLinkingOtpRepository",
     "DeviceRecord",
     "DeviceRepository",
     "ExpiryCleanupRepository",
     "MAX_CLEANUP_BATCH_SIZE",
-    "PairingRepository",
-    "PairingRequestRecord",
-    "PairingRequestRepository",
-    "InMemoryPairingRequestRepository",
     "RateLimitBucketRecord",
     "RateLimitBucketRepository",
     "RateLimitRepository",

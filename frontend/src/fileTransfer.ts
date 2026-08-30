@@ -49,6 +49,18 @@ export type TransferManifest = {
     chunk_size: number;
 };
 
+export type SignedFileOffer = {
+    core: {
+        v: 1;
+        type: 'file_offer';
+        transfer_id: string;
+        file_name: string;
+        media_type: string;
+        byte_count: number;
+    };
+    signature: string;
+};
+
 export type FileComplete = {
     v: 1;
     type: 'file_complete';
@@ -126,6 +138,7 @@ export type FileTransferEngineOptions = {
     inboundRegistry?: InboundTransferRegistry;
     onProgress?: (progress: TransferProgress) => void;
     onStateChange?: (state: FileTransferState) => void;
+    onFileOffer?: (manifest: TransferManifest) => void;
     onManifest?: (manifest: TransferManifest) => void;
     onReceived?: (file: ReceivedFile) => void;
     onReceipt?: (receipt: TransferReceipt) => void;
@@ -271,6 +284,54 @@ function parseManifest(value: ByteInput): TransferManifest {
         media_type: sanitizeMediaType(object.media_type),
         byte_count: byteCount,
         chunk_size: chunkSize,
+    };
+}
+
+export function parseFileOffer(value: ByteInput): SignedFileOffer & { manifest: TransferManifest } {
+    const wrapper = record(parseCanonicalJson(value), 'invalid_file_offer');
+    requireExactKeys(wrapper, ['core', 'signature']);
+    const coreObject = record(wrapper.core, 'invalid_file_offer');
+    requireExactKeys(coreObject, [
+        'v',
+        'type',
+        'transfer_id',
+        'file_name',
+        'media_type',
+        'byte_count',
+    ]);
+    if (
+        coreObject.v !== 1 ||
+        coreObject.type !== 'file_offer' ||
+        typeof coreObject.transfer_id !== 'string'
+    ) {
+        throw new ProtocolError('File offer is invalid.', 'invalid_file_offer');
+    }
+    const manifest = parseManifest(
+        canonicalJsonBytes({
+            file_name: coreObject.file_name,
+            media_type: coreObject.media_type,
+            byte_count: coreObject.byte_count,
+            chunk_size: DEFAULT_CHUNK_SIZE,
+        }),
+    );
+    if (typeof wrapper.signature !== 'string') {
+        throw new ProtocolError('File offer signature is invalid.', 'invalid_signature');
+    }
+    const signature = decodeBase64Url(wrapper.signature, 64);
+    if (signature.byteLength !== 64) {
+        throw new ProtocolError('File offer signature is invalid.', 'invalid_signature');
+    }
+    return {
+        core: {
+            v: 1,
+            type: 'file_offer',
+            transfer_id: coreObject.transfer_id,
+            file_name: manifest.file_name,
+            media_type: manifest.media_type,
+            byte_count: manifest.byte_count,
+        },
+        signature: wrapper.signature,
+        manifest,
     };
 }
 
@@ -652,6 +713,7 @@ export class FileTransferEngine {
     private readonly lowWaterMark: number;
     private readonly onProgress?: (progress: TransferProgress) => void;
     private readonly onStateChange?: (state: FileTransferState) => void;
+    private readonly onFileOffer?: (manifest: TransferManifest) => void;
     private readonly onManifest?: (manifest: TransferManifest) => void;
     private readonly onReceived?: (file: ReceivedFile) => void;
     private readonly onReceipt?: (receipt: TransferReceipt) => void;
@@ -659,6 +721,8 @@ export class FileTransferEngine {
     private readonly inboundDeviceId?: string;
     private readonly inboundRegistry: InboundTransferRegistry;
     private accepted = true;
+    private acceptanceSent = false;
+    private remoteAccepted = false;
     private stateValue: FileTransferState = 'idle';
     private started = false;
     private confirmationPromise: Promise<void> | undefined;
@@ -670,7 +734,12 @@ export class FileTransferEngine {
     private receiptPromise: Promise<TransferReceipt> | undefined;
     private receiptResolve: ((receipt: TransferReceipt) => void) | undefined;
     private receiptReject: ((error: ProtocolError) => void) | undefined;
+    private acceptancePromise: Promise<void> | undefined;
+    private acceptanceResolve: (() => void) | undefined;
+    private acceptanceReject: ((error: ProtocolError) => void) | undefined;
+    private offeredManifest: TransferManifest | undefined;
     private manifest: TransferManifest | undefined;
+    private sentCompletion: FileComplete | undefined;
     private receiverDigest: IncrementalSha256 | undefined;
     private receiverChunks: Uint8Array[] = [];
     private receivedBytes = 0;
@@ -730,6 +799,7 @@ export class FileTransferEngine {
         validateWatermarks(this.highWaterMark, this.lowWaterMark);
         this.onProgress = options.onProgress;
         this.onStateChange = options.onStateChange;
+        this.onFileOffer = options.onFileOffer;
         this.onManifest = options.onManifest;
         this.onReceived = options.onReceived;
         this.onReceipt = options.onReceipt;
@@ -803,14 +873,26 @@ export class FileTransferEngine {
         await this.sendConfirmation();
     }
 
-    accept(): void {
-        if (this.role !== 'recipient' || this.manifest) {
+    async accept(): Promise<void> {
+        if (this.role !== 'recipient' || !this.offeredManifest || this.manifest) {
             throw new ProtocolError(
                 'The transfer cannot be accepted in its current state.',
                 'invalid_state',
             );
         }
         this.accepted = true;
+        if (this.acceptanceSent) {
+            return;
+        }
+        await this.sendFrame(
+            'accept',
+            canonicalJsonBytes({
+                v: 1,
+                type: 'file_accept',
+                transfer_id: this.transferId,
+            }),
+        );
+        this.acceptanceSent = true;
     }
 
     reject(code = 'rejected'): Promise<void> {
@@ -846,13 +928,39 @@ export class FileTransferEngine {
         }
         await this.start();
         await this.waitForConfirmation();
-        this.setState('sending');
         const manifest: TransferManifest = {
             file_name: asFileName(input, fileName),
             media_type: fileMediaType(input),
             byte_count: input.size,
             chunk_size: this.chunkSize,
         };
+        this.acceptancePromise = new Promise<void>((resolve, reject) => {
+            this.acceptanceResolve = resolve;
+            this.acceptanceReject = reject;
+        });
+        const offer = {
+            v: 1 as const,
+            type: 'file_offer' as const,
+            transfer_id: this.transferId,
+            file_name: manifest.file_name,
+            media_type: manifest.media_type,
+            byte_count: manifest.byte_count,
+        };
+        const offerSignature = encodeBase64Url(
+            await signP256(this.signingKey, canonicalJsonBytes(offer)),
+        );
+        await this.sendFrame(
+            'file_offer',
+            canonicalJsonBytes({ core: offer, signature: offerSignature }),
+        );
+        await this.acceptancePromise;
+        if (this.isTerminal()) {
+            throw (
+                this.terminalError ??
+                new ProtocolError('The transfer is not available.', 'invalid_state')
+            );
+        }
+        this.setState('sending');
         await this.sendFrame('manifest', canonicalJsonBytes(manifest));
         const digest = new IncrementalSha256();
         let offset = 0;
@@ -878,6 +986,7 @@ export class FileTransferEngine {
             sha256: encodeBase64Url(digest.digest()),
             transcript_hash: encodeBase64Url(this.material.transcriptHash),
         };
+        this.sentCompletion = core;
         const signature = encodeBase64Url(
             await signP256(this.signingKey, canonicalJsonBytes(core)),
         );
@@ -903,6 +1012,14 @@ export class FileTransferEngine {
             );
             if (result.header.type === 'confirm') {
                 await this.handleConfirmation();
+                return;
+            }
+            if (result.header.type === 'file_offer') {
+                await this.handleFileOffer(result.plaintext);
+                return;
+            }
+            if (result.header.type === 'accept') {
+                this.handleAccept(result.plaintext);
                 return;
             }
             if (result.header.type === 'manifest') {
@@ -997,7 +1114,16 @@ export class FileTransferEngine {
     }
 
     private async sendFrame(
-        type: 'confirm' | 'manifest' | 'chunk' | 'complete' | 'receipt' | 'cancel' | 'error',
+        type:
+            | 'confirm'
+            | 'file_offer'
+            | 'accept'
+            | 'manifest'
+            | 'chunk'
+            | 'complete'
+            | 'receipt'
+            | 'cancel'
+            | 'error',
         plaintext: ByteInput,
         confirmation = false,
     ): Promise<void> {
@@ -1026,6 +1152,59 @@ export class FileTransferEngine {
         this.channel.send(frame.slice().buffer as ArrayBuffer);
     }
 
+    private async handleFileOffer(value: ByteInput): Promise<void> {
+        if (this.role !== 'recipient' || this.offeredManifest || this.manifest) {
+            throw new ProtocolError('The file offer is not expected.', 'invalid_state');
+        }
+        const offer = parseFileOffer(value);
+        if (offer.core.transfer_id !== this.transferId) {
+            throw new ProtocolError(
+                'File offer transfer identifier does not match.',
+                'identity_mismatch',
+            );
+        }
+        const publicKey =
+            this.senderSigningPublicKey instanceof CryptoKey
+                ? this.senderSigningPublicKey
+                : await importP256Spki(this.senderSigningPublicKey as ByteInput, 'signing');
+        if (
+            !(await verifyP256(
+                publicKey,
+                canonicalJsonBytes(offer.core),
+                decodeBase64Url(offer.signature, 64),
+            ))
+        ) {
+            throw new ProtocolError('File offer signature is invalid.', 'invalid_signature');
+        }
+        this.offeredManifest = offer.manifest;
+        this.onFileOffer?.({ ...offer.manifest });
+        if (this.accepted) {
+            await this.accept();
+        }
+    }
+
+    private handleAccept(value: ByteInput): void {
+        if (this.role !== 'sender' || this.remoteAccepted) {
+            throw new ProtocolError('The file acceptance is not expected.', 'invalid_state');
+        }
+        const object = record(parseCanonicalJson(value), 'invalid_accept');
+        requireExactKeys(object, ['v', 'type', 'transfer_id']);
+        if (
+            object.v !== 1 ||
+            object.type !== 'file_accept' ||
+            object.transfer_id !== this.transferId
+        ) {
+            throw new ProtocolError('File acceptance is invalid.', 'invalid_accept');
+        }
+        this.remoteAccepted = true;
+        this.acceptanceResolve?.();
+        this.acceptanceResolve = undefined;
+        this.acceptanceReject = undefined;
+        if (this.stateValue === 'confirming' || this.stateValue === 'ready') {
+            this.setState('ready');
+        }
+    }
+
     private async handleManifest(value: ByteInput): Promise<void> {
         if (this.role !== 'recipient') {
             throw new ProtocolError('A sender cannot receive a manifest.', 'invalid_state');
@@ -1033,10 +1212,23 @@ export class FileTransferEngine {
         if (!this.accepted) {
             throw new ProtocolError('The transfer was not accepted.', 'not_accepted');
         }
+        if (!this.offeredManifest) {
+            throw new ProtocolError('A signed file offer is required.', 'offer_required');
+        }
         if (this.manifest) {
             throw new ProtocolError('The manifest was duplicated.', 'invalid_state');
         }
         this.manifest = parseManifest(value);
+        if (
+            this.manifest.file_name !== this.offeredManifest.file_name ||
+            this.manifest.media_type !== this.offeredManifest.media_type ||
+            this.manifest.byte_count !== this.offeredManifest.byte_count
+        ) {
+            throw new ProtocolError(
+                'The manifest does not match the signed file offer.',
+                'offer_mismatch',
+            );
+        }
         this.receiverDigest = new IncrementalSha256();
         this.setState('receiving');
         this.onManifest?.({ ...this.manifest });
@@ -1135,6 +1327,13 @@ export class FileTransferEngine {
                 'identity_mismatch',
             );
         }
+        if (
+            !this.sentCompletion ||
+            receipt.byte_count !== this.sentCompletion.byte_count ||
+            receipt.sha256 !== this.sentCompletion.sha256
+        ) {
+            throw new ProtocolError('Receipt does not match the sent file.', 'receipt_mismatch');
+        }
         this.receiptResolve?.(receipt);
         this.receiptResolve = undefined;
         this.receiptReject = undefined;
@@ -1209,6 +1408,9 @@ export class FileTransferEngine {
         this.receiptReject?.(error);
         this.receiptResolve = undefined;
         this.receiptReject = undefined;
+        this.acceptanceReject?.(error);
+        this.acceptanceResolve = undefined;
+        this.acceptanceReject = undefined;
     }
 
     private async readSlice(file: Blob, start: number, end: number): Promise<Uint8Array> {

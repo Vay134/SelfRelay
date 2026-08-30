@@ -1,6 +1,5 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import cast
 
 import asyncpg  # type: ignore[import-untyped]
 from fastapi import FastAPI
@@ -23,26 +22,19 @@ from app.device_auth import router as device_router
 from app.logging import configure_logging
 from app.metrics import RuntimeMetrics
 from app.operator_metrics import router as operator_metrics_router
-from app.pairings import (
-    PairingApprovalService,
-    PairingApprovalStore,
-    PairingEnrollmentService,
-    PairingRequestService,
-)
-from app.pairings import router as pairing_router
 from app.presence import PresenceManager, WebSocketTicketService
 from app.presence import router as presence_router
 from app.repositories import (
     AccountRepository,
     DeviceChallengeRepository,
+    DeviceLinkingOtpRepository,
     DeviceRepository,
     InMemoryDeviceChallengeRepository,
+    InMemoryDeviceLinkingOtpRepository,
     InMemoryDeviceRepository,
-    InMemoryPairingRequestRepository,
     InMemorySecurityEventRepository,
     InMemoryTransferRequestRepository,
     InMemoryWebSocketTicketRepository,
-    PairingRequestRepository,
     PersistentRateLimiter,
     RateLimitBucketRepository,
     SecurityEventRepository,
@@ -112,7 +104,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     )
     session_service = SessionService(session_repository)
     device_repository = (
-        InMemoryDeviceRepository(session_repository, account_store)
+        InMemoryDeviceRepository(session_repository)
         if settings.app_env == "test"
         else DeviceRepository(database)
     )
@@ -121,10 +113,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if settings.app_env == "test"
         else DeviceChallengeRepository(database)
     )
-    pairing_repository = (
-        InMemoryPairingRequestRepository(device_repository, session_repository)
+    linking_otp_repository = (
+        InMemoryDeviceLinkingOtpRepository(device_repository)
         if settings.app_env == "test"
-        else PairingRequestRepository(database)
+        else DeviceLinkingOtpRepository(database)
     )
     security_event_repository = (
         InMemorySecurityEventRepository()
@@ -152,8 +144,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         device_repository,
         challenge_repository,
         session_service,
+        linking_otp_repository,
         bootstrap_consumer=auth_service.consume_bootstrap,
         bootstrap_peeker=auth_service.peek_bootstrap,
+        rate_limiter=rate_limiter,
+        security_event_store=security_event_repository,
     )
     application.state.otp_service = auth_service
     application.state.auth_service = auth_service
@@ -183,27 +178,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     )
     application.state.device_repository = device_repository
     application.state.device_challenge_repository = challenge_repository
-    application.state.pairing_repository = pairing_repository
+    application.state.device_linking_otp_repository = linking_otp_repository
     application.state.security_event_repository = security_event_repository
-    application.state.pairing_request_service = PairingRequestService(
-        account_store,
-        pairing_repository,
-        rate_limiter=rate_limiter,
-        security_event_store=security_event_repository,
-    )
-    application.state.pairing_approval_service = PairingApprovalService(
-        account_store,
-        device_repository,
-        cast(PairingApprovalStore, pairing_repository),
-        rate_limiter=rate_limiter,
-        security_event_store=security_event_repository,
-    )
-    application.state.pairing_enrollment_service = PairingEnrollmentService(
-        account_store,
-        device_repository,
-        cast(PairingApprovalStore, pairing_repository),
-        session_service,
-    )
     application.state.device_auth_service = device_auth_service
     try:
         yield
@@ -251,7 +227,6 @@ app.include_router(router)
 app.include_router(availability_router)
 app.include_router(session_router)
 app.include_router(device_router)
-app.include_router(pairing_router)
 app.include_router(presence_router)
 app.include_router(operator_metrics_router)
 app.include_router(transfer_router)

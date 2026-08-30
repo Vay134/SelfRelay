@@ -27,9 +27,9 @@ Supabase Auth remains the source of the authentication identity. Application aut
 | `id` | Internal account identifier |
 | `supabase_user_id` | Unique link to Supabase Auth |
 | `email_normalized` | Unique normalized email used for account lookup |
-| `device_epoch` | Incremented during account recovery |
+| `device_epoch` | Current device-authorization epoch, retained for explicit future account-wide reset support |
 | `created_at` | Account creation time |
-| `recovered_at` | Most recent recovery time, nullable |
+| `email_fallback_at` | Most recent email fallback time, nullable |
 | `deleted_at` | Soft-delete marker during deletion workflow |
 
 Authorization must not use editable Supabase `user_metadata`. The verified Supabase user identifier and application database relationships establish ownership.
@@ -44,13 +44,13 @@ Authorization must not use editable Supabase `user_metadata`. The verified Supab
 | `label` | User-visible, length-limited plain text |
 | `signing_public_key_spki` | ECDSA P-256 public key |
 | `fingerprint` | Unique SHA-256 fingerprint |
-| `status` | `active` or `revoked` |
+| `status` | `active`, `inactive`, or `revoked` |
 | `created_at` | Enrollment time |
 | `last_seen_at` | Coarse activity time |
 | `revoked_at` | Revocation time, nullable |
-| `approved_by_device_id` | Trusted device that approved enrollment, nullable for recovery |
+| `linked_by_device_id` | Device that generated the linking OTP, nullable for email fallback |
 
-The fingerprint is unique within an account. Active authentication requires both `status = active` and `epoch = app_users.device_epoch`.
+The fingerprint is unique within an account. Devices with `status = active` can authenticate and transfer. Logging a device out changes it to `inactive` without deleting its key record; a later device-key challenge or verified email fallback can reactivate it. Revoked devices cannot reactivate without a new enrollment. Authorization also requires `epoch = app_users.device_epoch`.
 
 ### `app_sessions`
 
@@ -86,26 +86,21 @@ Raw session and CSRF values never enter the database or logs. Session lookup use
 
 Expired and consumed challenges are deleted promptly.
 
-### `pairing_requests`
+### `device_linking_otps`
 
 | Column | Purpose |
 | --- | --- |
-| `id` | Pairing identifier |
+| `id` | Device-linking OTP identifier |
 | `user_id` | Target account |
-| `requested_public_key_spki` | New device public key |
-| `requested_fingerprint` | New device fingerprint |
-| `requested_label` | Bounded device label |
-| `request_nonce` | Random public value bound into the approval signature |
-| `comparison_code_hash` | Hash of the human-readable code |
-| `status` | `pending`, `approved`, `rejected`, `expired`, or `consumed` |
-| `attempt_count` | Code or proof failures |
-| `approved_by_device_id` | Approving trusted device, nullable |
-| `approval_signature` | Approval signature retained until consumption |
+| `issuing_device_id` | Active device that generated the OTP |
+| `otp_hash` | Hash of the human-readable OTP |
+| `status` | `active`, `expired`, or `consumed` |
+| `attempt_count` | Failed redemption attempts |
 | `created_at` | Creation time |
 | `expires_at` | Ten-minute expiry |
-| `consumed_at` | Enrollment completion time |
+| `consumed_at` | Successful redemption time |
 
-Approval and device insertion occur in one transaction or use a row lock so the same request cannot enroll twice.
+OTP consumption and device insertion occur in one transaction or use a row lock so the same code cannot enroll twice. The submitted public key and proof of possession are validated during that transaction; neither belongs in the OTP record before redemption.
 
 ### `transfer_requests`
 
@@ -124,7 +119,7 @@ Approval and device insertion occur in one transaction or use a row lock so the 
 | `failure_code` | Bounded code, nullable |
 | `relay_used` | Optional coarse operational flag |
 
-This table does not store file names, MIME types, byte counts, SDP, ICE candidates, keys, or digests. Terminal records are kept for 30 days.
+This table does not store file names, MIME types, byte counts, SDP, ICE candidates, keys, or digests. The initial file metadata is forwarded to the intended recipient without durable storage. Terminal records are kept for 30 days.
 
 ### `websocket_tickets`
 
@@ -166,7 +161,7 @@ The initial migration should include:
 - unique index on `app_sessions.token_hash`
 - unique account and fingerprint constraint for devices
 - indexes on active device lookup by `user_id`
-- indexes on session, challenge, pairing, ticket, and transfer expiry
+- indexes on session, challenge, device-linking OTP, ticket, and transfer expiry
 - composite indexes for transfer ownership and device status
 - foreign-key restrictions that prevent devices from different accounts appearing in one transfer
 - check constraints for timestamps, counters, status values, and bounded lengths
@@ -180,7 +175,7 @@ The initial migration should include:
 | Active session | Until expiry, revocation, or account deletion |
 | Expired or revoked session | Seven days for troubleshooting, then delete |
 | Device challenge | Delete after expiry or consumption |
-| Pairing request | Delete 24 hours after a terminal state |
+| Device-linking OTP record | Delete 24 hours after expiry or consumption |
 | Transfer request | Delete 30 days after terminal state |
 | Security event | Delete after 30 days |
 | Rate-limit bucket | Delete after its enforcement window |

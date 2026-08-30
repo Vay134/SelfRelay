@@ -1,49 +1,7 @@
-import {
-    PAIRING_APPROVAL_VERSION,
-    encodeBase64Url,
-    signPairingApproval,
-    signPairingEnrollment,
-} from './deviceIdentity';
-
 const configuredApiOrigin = (import.meta as ImportMeta & { env?: { VITE_API_ORIGIN?: string } }).env
     ?.VITE_API_ORIGIN;
 export const API_ORIGIN = (configuredApiOrigin ?? 'http://localhost:8000').replace(/\/+$/u, '');
-export const PAIRING_PROTOCOL_VERSION = 1;
 export const API_REQUEST_TIMEOUT_MS = 15_000;
-
-export type PairingStatus = 'pending' | 'approved' | 'rejected' | 'consumed' | 'expired';
-
-export type PairingRequestMetadata = {
-    request_id: string;
-    status: PairingStatus;
-    requested_label: string;
-    requested_fingerprint: string;
-    request_nonce: string;
-    created_at: string;
-    expires_at: string;
-    approval_nonce?: string;
-};
-
-export type PairingRequestStart = {
-    message: string;
-    request_id: string;
-    status: 'pending';
-    fingerprint: string;
-    request_nonce: string;
-    comparison_code: string;
-    created_at: string;
-    expires_at: string;
-};
-
-export type PairingRequestStatus = PairingRequestMetadata & {
-    account_id?: string;
-    payload?: Record<string, unknown>;
-};
-
-export type PairingApprovalRequest = PairingRequestMetadata & {
-    account_id: string;
-    account_device_epoch: number;
-};
 
 export type CurrentSession = {
     authenticated: true;
@@ -59,21 +17,11 @@ export type AuthenticatedDevice = {
     epoch: number;
     label: string;
     fingerprint: string;
-    status: 'active' | 'revoked' | string;
+    status: 'active' | 'inactive' | 'revoked' | string;
     created_at: string;
     last_seen_at: string;
     revoked_at: string | null;
-    approved_by_device_id: string | null;
-};
-
-export type PairingEnrollmentResult = {
-    authenticated: true;
-    account_id: string;
-    device: AuthenticatedDevice;
-    csrf_token: string;
-    session: Record<string, unknown>;
-    recovery: boolean;
-    warning: string | null;
+    linked_by_device_id: string | null;
 };
 
 export class ApiError extends Error {
@@ -179,134 +127,6 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     return body as T;
 }
 
-function jsonBody(value: unknown): string {
-    return JSON.stringify(value);
-}
-
-export async function startPairingRequest(
-    email: string,
-    publicKeySpki: Uint8Array,
-    fingerprint: string,
-    label: string,
-): Promise<PairingRequestStart> {
-    return apiRequest<PairingRequestStart>('/auth/pairing/requests', {
-        method: 'POST',
-        body: jsonBody({
-            email,
-            public_key_spki: encodeBase64Url(publicKeySpki),
-            fingerprint,
-            label,
-        }),
-    });
-}
-
-export async function getPairingRequestStatus(requestId: string): Promise<PairingRequestStatus> {
-    return apiRequest<PairingRequestStatus>(
-        `/auth/pairing/requests/${encodeURIComponent(requestId)}`,
-    );
-}
-
 export async function getCurrentSession(): Promise<CurrentSession> {
     return apiRequest<CurrentSession>('/auth/session/current');
-}
-
-export async function listPendingPairingRequests(): Promise<PairingApprovalRequest[]> {
-    const body = await apiRequest<{ requests: PairingApprovalRequest[] }>('/auth/pairing/requests');
-    return Array.isArray(body.requests) ? body.requests : [];
-}
-
-export function normalizeProtocolTimestamp(value: string): string {
-    if (typeof value !== 'string' || value.length === 0) {
-        throw new TypeError('A timestamp is required.');
-    }
-    const utcValue = value.endsWith('Z')
-        ? value.slice(0, -1)
-        : value.endsWith('+00:00')
-          ? value.slice(0, -6)
-          : null;
-    if (utcValue === null) {
-        throw new TypeError('Pairing timestamps must be UTC.');
-    }
-    const [whole, fraction = ''] = utcValue.split('.');
-    if (!whole || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/u.test(whole)) {
-        throw new TypeError('Pairing timestamp has an invalid format.');
-    }
-    if (fraction && !/^\d+$/u.test(fraction)) {
-        throw new TypeError('Pairing timestamp has an invalid fraction.');
-    }
-    return `${whole}.${fraction.padEnd(6, '0').slice(0, 6)}Z`;
-}
-
-export function buildPairingApprovalPayload(
-    request: PairingApprovalRequest,
-    approvalNonce: string,
-): Record<string, unknown> {
-    return {
-        account_device_epoch: request.account_device_epoch,
-        account_id: request.account_id,
-        approval_nonce: approvalNonce,
-        expires_at: normalizeProtocolTimestamp(request.expires_at),
-        pairing_approval_version: PAIRING_APPROVAL_VERSION,
-        pairing_request_id: request.request_id,
-        protocol_version: PAIRING_PROTOCOL_VERSION,
-        requested_fingerprint: request.requested_fingerprint,
-        request_nonce: request.request_nonce,
-    };
-}
-
-export async function approvePairingRequest(
-    pairingRequest: PairingApprovalRequest,
-    comparisonCode: string,
-    approvalNonce: Uint8Array,
-    approvingIdentity: Parameters<typeof signPairingApproval>[0],
-): Promise<PairingRequestMetadata> {
-    const encodedNonce = encodeBase64Url(approvalNonce);
-    const payload = buildPairingApprovalPayload(pairingRequest, encodedNonce);
-    const signature = await signPairingApproval(approvingIdentity, payload);
-    const body = await apiRequest<{ request: PairingRequestMetadata }>(
-        `/auth/pairing/requests/${encodeURIComponent(pairingRequest.request_id)}/approve`,
-        {
-            method: 'POST',
-            body: jsonBody({
-                comparison_code: comparisonCode,
-                approval_nonce: encodedNonce,
-                signature,
-            }),
-        },
-    );
-    return body.request;
-}
-
-export async function rejectPairingRequest(requestId: string): Promise<PairingRequestMetadata> {
-    const body = await apiRequest<{ request: PairingRequestMetadata }>(
-        `/auth/pairing/requests/${encodeURIComponent(requestId)}/reject`,
-        { method: 'POST' },
-    );
-    return body.request;
-}
-
-export async function completePairingRequest(
-    pairingRequest: PairingRequestStatus,
-    publicKeySpki: Uint8Array,
-    fingerprint: string,
-    requestedIdentity: Parameters<typeof signPairingEnrollment>[0],
-): Promise<PairingEnrollmentResult> {
-    if (!pairingRequest.account_id || !pairingRequest.payload || !pairingRequest.approval_nonce) {
-        throw new ApiError(0, 'The approved pairing is missing its proof payload.');
-    }
-    const signature = await signPairingEnrollment(requestedIdentity, pairingRequest.payload);
-    return apiRequest<PairingEnrollmentResult>(
-        `/auth/pairing/requests/${encodeURIComponent(pairingRequest.request_id)}/complete`,
-        {
-            method: 'POST',
-            body: jsonBody({
-                account_id: pairingRequest.account_id,
-                public_key_spki: encodeBase64Url(publicKeySpki),
-                fingerprint,
-                request_nonce: pairingRequest.request_nonce,
-                approval_nonce: pairingRequest.approval_nonce,
-                signature,
-            }),
-        },
-    );
 }

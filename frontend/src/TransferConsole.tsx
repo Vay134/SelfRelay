@@ -160,6 +160,9 @@ type TransferRun = {
     progress: TransferProgress | null;
     fileName?: string;
     fileSize?: number;
+    fileType?: string;
+    fileOffer?: boolean;
+    engineReady?: boolean;
     receivedFile?: ReceivedFile;
     receipt?: TransferReceipt;
     error?: string;
@@ -226,7 +229,6 @@ function TransferConsole() {
     const [availabilityStatus, setAvailabilityStatus] = useState<AvailabilityState>('starting');
     const [socketStatus, setSocketStatus] = useState<PresenceClientStatus>('idle');
     const [connectionStates, setConnectionStates] = useState<Record<string, WebRtcTestState>>({});
-    const [selectedDeviceId, setSelectedDeviceId] = useState('');
     const [busyTransferId, setBusyTransferId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
@@ -250,6 +252,9 @@ function TransferConsole() {
     const cleaningTransfersRef = useRef<Set<string>>(new Set());
     const queuedSignalsRef = useRef<Map<string, SignalingEnvelope[]>>(new Map());
     const socketMessageRef = useRef<(message: PresenceSocketMessage) => void>(() => undefined);
+    const fileInputsRef = useRef<Record<string, HTMLInputElement | null>>({});
+    const filePickerRequestedRef = useRef<Set<string>>(new Set());
+    const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
         devicesRef.current = devices;
@@ -357,6 +362,11 @@ function TransferConsole() {
                     chunkCount: transferRunsRef.current[transferId]?.progress?.chunkCount ?? 0,
                 },
             });
+            setNotice('Successful send!');
+            if (successTimerRef.current !== null) {
+                clearTimeout(successTimerRef.current);
+            }
+            successTimerRef.current = setTimeout(() => setNotice(null), 3_000);
         } catch (transferError) {
             updateTransferRun(transferId, {
                 state: engine.state === 'cancelled' ? 'cancelled' : 'failed',
@@ -386,7 +396,7 @@ function TransferConsole() {
                 signingKey: context.role === 'sender' ? context.identity.privateKey : undefined,
                 senderSigningPublicKey:
                     context.role === 'recipient' ? context.peerSigningPublicKey : undefined,
-                accepted: context.role === 'recipient',
+                accepted: false,
                 inboundDeviceId:
                     context.role === 'recipient' ? context.identity.deviceId : undefined,
                 onProgress: (progress) => {
@@ -397,10 +407,24 @@ function TransferConsole() {
                         updateTransferRun(transferId, { state: nextState });
                     }
                 },
+                onFileOffer: (manifest) => {
+                    updateTransferRun(transferId, {
+                        fileName: manifest.file_name,
+                        fileSize: manifest.byte_count,
+                        fileType: manifest.media_type,
+                        fileOffer: true,
+                        progress: {
+                            bytesTransferred: 0,
+                            totalBytes: manifest.byte_count,
+                            chunkCount: 0,
+                        },
+                    });
+                },
                 onManifest: (manifest) => {
                     updateTransferRun(transferId, {
                         fileName: manifest.file_name,
                         fileSize: manifest.byte_count,
+                        fileType: manifest.media_type,
                         progress: {
                             bytesTransferred: 0,
                             totalBytes: manifest.byte_count,
@@ -414,6 +438,7 @@ function TransferConsole() {
                         fileName: receivedFile.fileName,
                         fileSize: receivedFile.byteCount,
                         receivedFile,
+                        fileType: receivedFile.mediaType,
                         progress: {
                             bytesTransferred: receivedFile.byteCount,
                             totalBytes: receivedFile.byteCount,
@@ -421,6 +446,11 @@ function TransferConsole() {
                                 transferRunsRef.current[transferId]?.progress?.chunkCount ?? 0,
                         },
                     });
+                    setNotice('Successful receive!');
+                    if (successTimerRef.current !== null) {
+                        clearTimeout(successTimerRef.current);
+                    }
+                    successTimerRef.current = setTimeout(() => setNotice(null), 3_000);
                 },
                 onReceipt: (receipt) => {
                     updateTransferRun(transferId, { receipt, state: 'completed' });
@@ -436,9 +466,16 @@ function TransferConsole() {
                 },
             });
             context.engine = engine;
+            updateTransferRun(transferId, { engineReady: true });
             const selectedFile = fileSelectionsRef.current.get(transferId);
             if (context.role === 'sender' && selectedFile) {
                 void startFileTransfer(transferId, selectedFile, engine);
+            } else if (
+                context.role === 'sender' &&
+                !filePickerRequestedRef.current.has(transferId)
+            ) {
+                filePickerRequestedRef.current.add(transferId);
+                setTimeout(() => fileInputsRef.current[transferId]?.click(), 0);
             }
             return engine;
         })();
@@ -632,14 +669,6 @@ function TransferConsole() {
         if (message.type === 'presence') {
             setDevices(message.devices);
             devicesRef.current = message.devices;
-            if (!selectedDeviceId && message.devices.length > 0) {
-                const firstOther = message.devices.find(
-                    (device) => device.device_id !== sessionRef.current?.device_id,
-                );
-                if (firstOther) {
-                    setSelectedDeviceId(firstOther.device_id);
-                }
-            }
             return;
         }
         if (
@@ -649,7 +678,23 @@ function TransferConsole() {
             message.type === 'transfer_cancelled' ||
             message.type === 'transfer_expired'
         ) {
-            upsertTransfer(transferFromNotification(message));
+            const nextTransfer = transferFromNotification(message);
+            upsertTransfer(nextTransfer);
+            if (
+                message.type === 'transfer_offer' &&
+                sessionRef.current?.device_id === message.recipient_device_id
+            ) {
+                void (async () => {
+                    const testSession = await createTestSession(nextTransfer, 'recipient');
+                    await testSession?.start();
+                })().catch((signalError: unknown) => {
+                    markSessionFailed(
+                        message.transfer_id,
+                        signalError,
+                        'The secure transfer could not start.',
+                    );
+                });
+            }
             if (
                 message.type === 'transfer_rejected' ||
                 message.type === 'transfer_cancelled' ||
@@ -684,12 +729,6 @@ function TransferConsole() {
             const [online, existing] = await Promise.all([listOnlineDevices(), listTransfers()]);
             setDevices(online);
             devicesRef.current = online;
-            setSelectedDeviceId(
-                (selected) =>
-                    selected ||
-                    online.find((device) => device.device_id !== current.device_id)?.device_id ||
-                    '',
-            );
             transfersRef.current = existing;
             setTransfers(existing);
             setState('ready');
@@ -767,6 +806,7 @@ function TransferConsole() {
             }
         };
         void initialize();
+        const filePickerRequests = filePickerRequestedRef.current;
         return () => {
             mounted = false;
             availabilityRef.current?.dispose();
@@ -785,6 +825,10 @@ function TransferConsole() {
             fileSelections.clear();
             sendStarted.clear();
             cancelledTransfers.clear();
+            filePickerRequests.clear();
+            if (successTimerRef.current !== null) {
+                clearTimeout(successTimerRef.current);
+            }
         };
     }, [refresh]);
 
@@ -828,6 +872,7 @@ function TransferConsole() {
             queuedSignalsRef.current.delete(transferId);
             fileSelectionsRef.current.delete(transferId);
             sendStartedRef.current.delete(transferId);
+            filePickerRequestedRef.current.delete(transferId);
             cleaningTransfersRef.current.delete(transferId);
             updateTransferRun(transferId, {
                 state: 'cancelled',
@@ -886,20 +931,16 @@ function TransferConsole() {
         void startSenderSession(transfer);
     };
 
-    const handleCreateOffer = async () => {
-        if (!selectedDeviceId) {
-            setError('Choose an online device first.');
-            return;
-        }
+    const handleCreateOffer = async (recipientDeviceId: string) => {
         setBusyTransferId('new');
         setError(null);
         setNotice(null);
         try {
-            const created = await createTransferOffer(selectedDeviceId);
+            const created = await createTransferOffer(recipientDeviceId);
             upsertTransfer(created);
-            setNotice(
-                'Transfer request sent. The other browser must accept before the channel opens.',
-            );
+            setNotice('Connecting securely. The file picker will open when the channel is ready.');
+            const testSession = await createTestSession(created, 'sender');
+            await testSession?.start();
         } catch (createError) {
             setError(errorMessage(createError, 'The transfer offer could not be created.'));
         } finally {
@@ -912,15 +953,16 @@ function TransferConsole() {
         setError(null);
         setNotice(null);
         try {
+            const context = sessionContextsRef.current.get(transfer.transfer_id);
+            const engine = context?.engine;
+            if (!engine) {
+                throw new Error('The secure file offer is not ready yet. Try again in a moment.');
+            }
             const accepted = await acceptTransfer(transfer.transfer_id);
             upsertTransfer(accepted);
-            updateTransferRun(accepted.transfer_id, { state: 'confirming', error: undefined });
-            const testSession = await createTestSession(accepted, 'recipient');
-            if (!testSession) {
-                throw new Error('The authenticated transfer session could not be created.');
-            }
-            await testSession?.start();
-            setNotice('Transfer accepted. Waiting for the sender to choose a file.');
+            await engine.accept();
+            updateTransferRun(accepted.transfer_id, { error: undefined });
+            setNotice('File accepted. Waiting for the sender to send it.');
         } catch (acceptError) {
             markSessionFailed(
                 transfer.transfer_id,
@@ -939,6 +981,7 @@ function TransferConsole() {
         try {
             upsertTransfer(await rejectTransfer(transfer.transfer_id));
             cancelledTransfersRef.current.add(transfer.transfer_id);
+            await cleanupTransferRuntime(transfer.transfer_id);
             setNotice('The transfer request was declined.');
         } catch (rejectError) {
             setError(errorMessage(rejectError, 'The transfer offer could not be rejected.'));
@@ -997,7 +1040,7 @@ function TransferConsole() {
     if (state === 'checking') {
         return (
             <section
-                className="pairing-panel empty-panel transfer-panel"
+                className="account-panel empty-panel transfer-panel"
                 aria-labelledby="transfer-title"
             >
                 <p className="section-kicker">Secure transfer</p>
@@ -1014,7 +1057,7 @@ function TransferConsole() {
     if (state === 'signed-out') {
         return (
             <section
-                className="pairing-panel empty-panel transfer-panel"
+                className="account-panel empty-panel transfer-panel"
                 aria-labelledby="transfer-title"
             >
                 <p className="section-kicker">Secure transfer</p>
@@ -1035,14 +1078,14 @@ function TransferConsole() {
 
     return (
         <>
-            <section className="pairing-panel transfer-panel" aria-labelledby="transfer-title">
+            <section className="account-panel transfer-panel" aria-labelledby="transfer-title">
                 <div className="panel-heading panel-heading-row">
                     <div>
                         <p className="section-kicker">Secure transfer</p>
                         <h2 id="transfer-title">Send a file between trusted browsers</h2>
                         <p>
-                            Send a request, wait for the other browser to accept it, then choose a
-                            file for the encrypted peer-to-peer transfer.
+                            Connect securely first. File details are shared only after the channel
+                            is ready.
                         </p>
                     </div>
                     <div>
@@ -1075,33 +1118,24 @@ function TransferConsole() {
                 )}
                 <div className="transfer-create">
                     <div>
-                        <p className="request-label">Start a transfer</p>
-                        <strong>Choose an online browser</strong>
+                        <p className="request-label">Transfer to this device</p>
+                        <strong>Choose an active browser</strong>
                     </div>
-                    <label className="sr-only" htmlFor="transfer-recipient">
-                        Recipient browser
-                    </label>
-                    <select
-                        id="transfer-recipient"
-                        value={selectedDeviceId}
-                        onChange={(event) => setSelectedDeviceId(event.target.value)}
-                        disabled={otherDevices.length === 0 || busyTransferId === 'new'}
-                    >
-                        <option value="">Select a device</option>
+                    <div className="request-actions">
                         {otherDevices.map((device) => (
-                            <option key={device.device_id} value={device.device_id}>
-                                {device.label}
-                            </option>
+                            <button
+                                className="button button-primary"
+                                key={device.device_id}
+                                type="button"
+                                onClick={() => void handleCreateOffer(device.device_id)}
+                                disabled={busyTransferId === 'new'}
+                            >
+                                {busyTransferId === 'new'
+                                    ? 'Connecting…'
+                                    : 'Transfer to ' + device.label}
+                            </button>
                         ))}
-                    </select>
-                    <button
-                        className="button button-primary"
-                        type="button"
-                        onClick={() => void handleCreateOffer()}
-                        disabled={!selectedDeviceId || busyTransferId === 'new'}
-                    >
-                        {busyTransferId === 'new' ? 'Sending request…' : 'Send transfer request'}
-                    </button>
+                    </div>
                 </div>
                 {otherDevices.length === 0 && (
                     <p className="inline-message inline-message-neutral" role="status">
@@ -1120,6 +1154,7 @@ function TransferConsole() {
                         <div className="transfer-list">
                             {incomingOffers.map((transfer) => {
                                 const busy = busyTransferId === transfer.transfer_id;
+                                const run = transferRuns[transfer.transfer_id];
                                 return (
                                     <article className="transfer-card" key={transfer.transfer_id}>
                                         <div className="trusted-request-heading">
@@ -1138,28 +1173,37 @@ function TransferConsole() {
                                                 Expires {formatDate(transfer.expires_at)}
                                             </span>
                                         </div>
-                                        <p className="transfer-copy">
-                                            The sender has not shared file details yet. Accept to
-                                            open the encrypted browser channel.
-                                        </p>
+                                        {run?.fileOffer ? (
+                                            <p className="transfer-copy">
+                                                <strong>{run.fileName}</strong>
+                                                {run.fileSize !== undefined &&
+                                                    ' · ' + formatBytes(run.fileSize)}
+                                                {run.fileType && ' · ' + run.fileType}
+                                            </p>
+                                        ) : (
+                                            <p className="transfer-copy">
+                                                Secure channel opening. File details will appear
+                                                here before any bytes are sent.
+                                            </p>
+                                        )}
                                         <div className="request-actions">
                                             <button
                                                 className="button button-primary"
                                                 type="button"
                                                 onClick={() => void handleAccept(transfer)}
-                                                disabled={busy}
-                                                aria-label={`Accept transfer from ${deviceName(transfer.sender_device_id, session, devices)}`}
+                                                disabled={busy || !run?.fileOffer}
+                                                aria-label={`Accept file from ${deviceName(transfer.sender_device_id, session, devices)}`}
                                             >
-                                                {busy ? 'Opening…' : 'Accept transfer'}
+                                                {busy ? 'Accepting…' : 'Accept file'}
                                             </button>
                                             <button
                                                 className="button button-danger"
                                                 type="button"
                                                 onClick={() => void handleReject(transfer)}
                                                 disabled={busy}
-                                                aria-label={`Reject transfer from ${deviceName(transfer.sender_device_id, session, devices)}`}
+                                                aria-label={`Decline file from ${deviceName(transfer.sender_device_id, session, devices)}`}
                                             >
-                                                Reject
+                                                Decline
                                             </button>
                                         </div>
                                     </article>
@@ -1206,11 +1250,13 @@ function TransferConsole() {
                                     ['completed', 'cancelled', 'closed'].includes(run.state);
                                 const canChooseFile =
                                     isSender &&
-                                    transfer.status === 'accepted' &&
+                                    ['offered', 'accepted', 'negotiating', 'connected'].includes(
+                                        transfer.status,
+                                    ) &&
+                                    run?.engineReady === true &&
                                     !busy &&
-                                    (!run ||
-                                        (run.state === 'failed' &&
-                                            !sessionsRef.current.has(transfer.transfer_id)));
+                                    !runHasEnded &&
+                                    !sendStartedRef.current.has(transfer.transfer_id);
                                 const canCancel =
                                     isParticipant &&
                                     [
@@ -1259,23 +1305,21 @@ function TransferConsole() {
                                                 </span>
                                             )}
                                         </div>
-                                        {!run && transfer.status === 'accepted' && isSender && (
+                                        {!run && isSender && (
                                             <p className="transfer-copy">
-                                                Accepted. Choose a file to start the encrypted
-                                                transfer; its name and size stay private until then.
+                                                Connecting securely. Choose a file when the channel
+                                                is ready; its name and size stay private until then.
                                             </p>
                                         )}
-                                        {!run && transfer.status === 'accepted' && !isSender && (
+                                        {!run && !isSender && (
                                             <p className="transfer-copy">
-                                                Accepted. Waiting for the sender to choose a file
-                                                and open the encrypted browser channel.
+                                                Waiting for the sender to share a signed file offer.
                                             </p>
                                         )}
-                                        {(!run || transfer.status !== 'accepted') && (
+                                        {!run && (
                                             <p className="transfer-copy">
-                                                Generic control-plane offer created{' '}
-                                                {formatDate(transfer.created_at)}. File metadata is
-                                                not part of this request.
+                                                Secure connection requested{' '}
+                                                {formatDate(transfer.created_at)}.
                                             </p>
                                         )}
                                         {run?.fileName && (
@@ -1283,6 +1327,7 @@ function TransferConsole() {
                                                 <strong>{run.fileName}</strong>
                                                 {run.fileSize !== undefined &&
                                                     ` · ${formatBytes(run.fileSize)}`}
+                                                {run.fileType && ` · ${run.fileType}`}
                                             </p>
                                         )}
                                         {run && run.state !== 'idle' && (
@@ -1335,35 +1380,48 @@ function TransferConsole() {
                                                 </div>
                                             )}
                                         <div className="request-actions">
-                                            {isSender && transfer.status === 'accepted' && (
-                                                <label
-                                                    className="button button-primary"
-                                                    htmlFor={`transfer-file-${transfer.transfer_id}`}
-                                                >
-                                                    {canChooseFile
-                                                        ? 'Choose file'
-                                                        : 'File selected'}
-                                                    <input
-                                                        id={`transfer-file-${transfer.transfer_id}`}
-                                                        type="file"
-                                                        aria-label={`File to send to ${deviceName(transfer.recipient_device_id, session, devices)}`}
-                                                        onChange={(event) => {
-                                                            const file =
-                                                                event.currentTarget.files?.[0];
-                                                            event.currentTarget.value = '';
-                                                            handleFileSelected(transfer, file);
-                                                        }}
-                                                        disabled={!canChooseFile}
-                                                        style={{
-                                                            position: 'absolute',
-                                                            width: 1,
-                                                            height: 1,
-                                                            overflow: 'hidden',
-                                                            clip: 'rect(0 0 0 0)',
-                                                        }}
-                                                    />
-                                                </label>
-                                            )}
+                                            {isSender &&
+                                                [
+                                                    'offered',
+                                                    'accepted',
+                                                    'negotiating',
+                                                    'connected',
+                                                ].includes(transfer.status) && (
+                                                    <label
+                                                        className="button button-primary"
+                                                        htmlFor={`transfer-file-${transfer.transfer_id}`}
+                                                    >
+                                                        {canChooseFile
+                                                            ? 'Choose file'
+                                                            : run?.engineReady
+                                                              ? 'File selected'
+                                                              : 'Connecting…'}
+                                                        <input
+                                                            id={`transfer-file-${transfer.transfer_id}`}
+                                                            type="file"
+                                                            ref={(element) => {
+                                                                fileInputsRef.current[
+                                                                    transfer.transfer_id
+                                                                ] = element;
+                                                            }}
+                                                            aria-label={`File to send to ${deviceName(transfer.recipient_device_id, session, devices)}`}
+                                                            onChange={(event) => {
+                                                                const file =
+                                                                    event.currentTarget.files?.[0];
+                                                                event.currentTarget.value = '';
+                                                                handleFileSelected(transfer, file);
+                                                            }}
+                                                            disabled={!canChooseFile}
+                                                            style={{
+                                                                position: 'absolute',
+                                                                width: 1,
+                                                                height: 1,
+                                                                overflow: 'hidden',
+                                                                clip: 'rect(0 0 0 0)',
+                                                            }}
+                                                        />
+                                                    </label>
+                                                )}
                                             {canCancel && (
                                                 <button
                                                     className="button button-danger"

@@ -22,10 +22,6 @@ export const DEVICE_STORE_KEY = 'current';
 export const DEVICE_PROTOCOL_VERSION = 1;
 export const DEVICE_CHALLENGE_VERSION = 1;
 export const DEVICE_AUTH_DOMAIN = 'e2e-secure-file-transfer/device-auth/v1\u0000';
-export const PAIRING_APPROVAL_VERSION = 1;
-export const PAIRING_ENROLLMENT_VERSION = 1;
-export const PAIRING_APPROVAL_DOMAIN = 'e2e-secure-file-transfer/pairing-approval/v1\u0000';
-export const PAIRING_ENROLLMENT_DOMAIN = 'e2e-secure-file-transfer/pairing-enrollment/v1\u0000';
 
 export type DeviceIdentity = {
     deviceId: string;
@@ -138,6 +134,42 @@ function randomUuid(): string {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Return a recognizable editable label without collecting a hardware identifier. */
+export function getDefaultDeviceLabel(): string {
+    if (typeof navigator === 'undefined') {
+        return 'This browser';
+    }
+    const userAgent = navigator.userAgent;
+    const hints = navigator as Navigator & {
+        userAgentData?: { mobile?: boolean; model?: string; platform?: string };
+    };
+    const platform = hints.userAgentData?.platform || navigator.platform || userAgent;
+    const model = hints.userAgentData?.model?.trim();
+    const operatingSystem = /Android/iu.test(platform)
+        ? 'Android'
+        : /iPhone/iu.test(userAgent)
+          ? 'iPhone'
+          : /iPad/iu.test(userAgent)
+            ? 'iPad'
+            : /Windows/iu.test(platform)
+              ? 'Windows'
+              : /Mac/iu.test(platform)
+                ? 'macOS'
+                : /Linux/iu.test(platform)
+                  ? 'Linux'
+                  : 'device';
+    const browser = /Edg\//u.test(userAgent)
+        ? 'Edge'
+        : /Firefox\//u.test(userAgent)
+          ? 'Firefox'
+          : /Chrome\//u.test(userAgent)
+            ? 'Chrome'
+            : /Safari\//u.test(userAgent)
+              ? 'Safari'
+              : 'Browser';
+    return model ? `${model} · ${browser}` : `${browser} on ${operatingSystem}`;
 }
 
 export function encodeBase64Url(value: unknown): string {
@@ -276,24 +308,6 @@ async function signDomainPayloadBytes(
         );
     }
     return bytes;
-}
-
-export async function signPairingApproval(
-    identity: DeviceIdentity,
-    payload: unknown,
-): Promise<string> {
-    return encodeBase64Url(
-        await signDomainPayloadBytes(identity, PAIRING_APPROVAL_DOMAIN, payload),
-    );
-}
-
-export async function signPairingEnrollment(
-    identity: DeviceIdentity,
-    payload: unknown,
-): Promise<string> {
-    return encodeBase64Url(
-        await signDomainPayloadBytes(identity, PAIRING_ENROLLMENT_DOMAIN, payload),
-    );
 }
 
 export async function signChallenge(identity: DeviceIdentity, payload: unknown): Promise<string> {

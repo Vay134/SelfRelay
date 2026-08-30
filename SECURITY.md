@@ -18,7 +18,7 @@ There is no service-level agreement during development. The repository owner wil
 
 Reports are particularly useful when they concern:
 
-- account takeover, session theft, or device-pairing bypasses
+- account takeover, session theft, or device-linking OTP bypasses
 - leakage or substitution of device public keys
 - failures in handshake authentication, nonce handling, or file encryption
 - cross-account signaling or insecure direct object references
@@ -32,4 +32,3 @@ The project cannot protect a file after the recipient saves or opens it. It also
 ## Handling test data
 
 Use synthetic files and test accounts. Never commit API keys, SMTP credentials, Supabase secret keys, database passwords, session tokens, or private device keys. Development-only authentication fakes must refuse to run in a production environment.
-

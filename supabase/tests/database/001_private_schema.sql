@@ -12,7 +12,7 @@ select has_table('private', 'app_users', 'private.app_users exists');
 select has_table('private', 'devices', 'private.devices exists');
 select has_table('private', 'app_sessions', 'private.app_sessions exists');
 select has_table('private', 'device_challenges', 'private.device_challenges exists');
-select has_table('private', 'pairing_requests', 'private.pairing_requests exists');
+select has_table('private', 'device_linking_otps', 'private.device_linking_otps exists');
 select has_table('private', 'transfer_requests', 'private.transfer_requests exists');
 select has_table('private', 'websocket_tickets', 'private.websocket_tickets exists');
 select has_table('private', 'security_events', 'private.security_events exists');
@@ -70,9 +70,9 @@ select has_index(
 );
 select has_index(
     'private',
-    'pairing_requests',
-    'pairing_requests_expiry_idx',
-    'pairing expiry index exists'
+    'device_linking_otps',
+    'device_linking_otps_expiry_idx',
+    'device-linking OTP expiry index exists'
 );
 select has_index(
     'private',
@@ -114,7 +114,7 @@ select ok(
                 ('private.devices'::text),
                 ('private.app_sessions'::text),
                 ('private.device_challenges'::text),
-                ('private.pairing_requests'::text),
+                ('private.device_linking_otps'::text),
                 ('private.transfer_requests'::text),
                 ('private.websocket_tickets'::text),
                 ('private.security_events'::text),
@@ -137,7 +137,7 @@ select ok(
                 ('private.devices'::text),
                 ('private.app_sessions'::text),
                 ('private.device_challenges'::text),
-                ('private.pairing_requests'::text),
+                ('private.device_linking_otps'::text),
                 ('private.transfer_requests'::text),
                 ('private.websocket_tickets'::text),
                 ('private.security_events'::text),

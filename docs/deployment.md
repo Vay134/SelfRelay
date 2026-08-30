@@ -64,7 +64,7 @@ Source pages:
 
 ### Scale-to-zero operation
 
-The production FastAPI service runs in Cloud Run region `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and one Uvicorn worker. Cloud Run can therefore scale the service to zero when idle. Its container filesystem is disposable; durable sessions, devices, offers, pairing records, and other authoritative state remain in Supabase.
+The production FastAPI service runs in Cloud Run region `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and one Uvicorn worker. Cloud Run can therefore scale the service to zero when idle. Its container filesystem is disposable; durable sessions, devices, offers, device-linking records, and other authoritative state remain in Supabase.
 
 The one-instance limit preserves the version 1 in-memory presence and signaling design and bounds cost. It also limits availability and throughput. A new revision can briefly overlap an old revision while existing requests drain, so deployments should avoid active transfers and should not split traffic between revisions. More than one serving instance requires shared presence and signaling fanout before the limit is raised.
 
@@ -102,7 +102,7 @@ The Brevo setup consists of:
 3. create an SMTP key dedicated to SelfRelay
 4. configure Supabase custom SMTP with `smtp-relay.brevo.com`, port `587`, the Brevo SMTP login, the SMTP key, the verified sender address, and sender name `SelfRelay`
 5. review the Supabase Auth email rate limit and keep the application-level OTP limits stricter where appropriate
-6. complete bootstrap and recovery OTP flows using external Gmail and Outlook recipients, checking delivery time and spam placement
+6. complete bootstrap and email-fallback OTP flows using external Gmail and Outlook recipients, checking delivery time and spam placement
 7. record the sender address shown by each provider before enabling public sign-up
 
 Without an owned domain, SPF, DKIM, and DMARC cannot be configured for the personal sender's domain. Brevo may replace a free sender address with a provider-managed transactional address. That is accepted for the version 1 demonstration, but it is less recognizable and may have weaker deliverability than an authenticated custom domain. A future owned domain can be added without changing the FastAPI, frontend, or transfer protocol.
@@ -136,7 +136,7 @@ API_ORIGIN
 COOKIE_NAME
 SESSION_IDLE_SECONDS
 SESSION_ABSOLUTE_SECONDS
-PAIRING_TTL_SECONDS
+DEVICE_LINKING_OTP_TTL_SECONDS
 TRANSFER_OFFER_TTL_SECONDS
 MAX_FILE_BYTES
 LOG_LEVEL
@@ -197,7 +197,7 @@ Free projects lack downloadable automatic backups. Before a public schema migrat
 
 ## TURN controls
 
-The backend creates credentials only for an accepted transfer between active devices. TTL, issue count, and concurrent allocations are limited. Cloudflare usage should be monitored because relayed files can consume the only usage-based part of the design.
+The backend creates credentials only for an authenticated transfer between active devices. TTL, issue count, and concurrent allocations are limited. Cloudflare usage should be monitored because relayed files can consume the only usage-based part of the design.
 
 The client prefers direct connectivity but exposes whether a relay was used for troubleshooting. It does not treat direct connectivity as more secure because both routes use the same application encryption.
 
@@ -219,7 +219,7 @@ A production release must verify:
 - the Supabase service secret is absent from browser bundles
 - the scheduled availability probe authenticates, performs a genuine database-backed end-to-end check, and exposes observable failures without sensitive diagnostics
 - Supabase pause warnings are monitored and the pause/restore runbook is complete; probe activity is not treated as a guarantee against pausing
-- Brevo delivers bootstrap and recovery OTPs to external Gmail and Outlook recipients, and the observed sender identity is documented
+- Brevo delivers bootstrap and email-fallback OTPs to external Gmail and Outlook recipients, and the observed sender identity is documented
 - a forced TURN transfer completes
 - logs contain no OTP, token, private-key, file-name, SDP, ICE, cookie, or SMTP values
 - environment names and error pages do not expose stack traces

@@ -205,11 +205,10 @@ class AccountStore(Protocol):
 
     async def get_by_email(self, email_normalized: str) -> AccountRecord | None: ...
 
-    async def rotate_epoch(
+    async def mark_email_fallback(
         self,
         account_id: UUID,
-        *,
-        recovered_at: datetime,
+        at: datetime,
     ) -> AccountRecord | None: ...
 
 
@@ -245,13 +244,12 @@ class RepositoryAccountStore:
     async def get_by_email(self, email_normalized: str) -> AccountRecord | None:
         return await self._repository.get_by_email(email_normalized)
 
-    async def rotate_epoch(
+    async def mark_email_fallback(
         self,
         account_id: UUID,
-        *,
-        recovered_at: datetime,
+        at: datetime,
     ) -> AccountRecord | None:
-        return await self._repository.rotate_epoch(account_id, recovered_at=recovered_at)
+        return await self._repository.mark_email_fallback(account_id, at)
 
 
 class InMemoryAccountStore:
@@ -287,7 +285,7 @@ class InMemoryAccountStore:
                 email_normalized=email_normalized,
                 device_epoch=0,
                 created_at=current,
-                recovered_at=None,
+                email_fallback_at=None,
                 deleted_at=None,
             )
             self._by_identity[supabase_user_id] = account
@@ -306,13 +304,12 @@ class InMemoryAccountStore:
             account = self._by_email.get(email_normalized)
             return None if account is None or account.deleted_at is not None else account
 
-    async def rotate_epoch(
+    async def mark_email_fallback(
         self,
         account_id: UUID,
-        *,
-        recovered_at: datetime,
+        at: datetime,
     ) -> AccountRecord | None:
-        current = recovered_at.astimezone(UTC)
+        current = at.astimezone(UTC)
         with self._lock:
             account = next(
                 (item for item in self._by_identity.values() if item.id == account_id),
@@ -320,11 +317,7 @@ class InMemoryAccountStore:
             )
             if account is None or account.deleted_at is not None:
                 return None
-            updated = replace(
-                account,
-                device_epoch=account.device_epoch + 1,
-                recovered_at=current,
-            )
+            updated = replace(account, email_fallback_at=current)
             self._by_identity[account.supabase_user_id] = updated
             self._by_email[account.email_normalized] = updated
             return updated
@@ -563,7 +556,7 @@ class OtpBootstrapService:
         *,
         now: datetime | None = None,
     ) -> BootstrapCredentials | None:
-        """Inspect bootstrap metadata while leaving it available for recovery."""
+        """Inspect bootstrap metadata while leaving it available for registration."""
 
         return self.bootstrap_store.peek(token, now=now)
 

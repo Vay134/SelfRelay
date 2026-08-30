@@ -27,7 +27,7 @@ TURN_CREDENTIAL_ACCOUNT_LIMIT = 20
 TURN_CREDENTIAL_DEVICE_LIMIT = 10
 TURN_CREDENTIAL_TRANSFER_LIMIT = 6
 TURN_CREDENTIAL_NETWORK_LIMIT = 30
-TURN_CREDENTIAL_ELIGIBLE_STATUSES = frozenset(TRANSFER_ACTIVE_STATUSES.difference({"offered"}))
+TURN_CREDENTIAL_ELIGIBLE_STATUSES = TRANSFER_ACTIVE_STATUSES
 
 TURN_UNAVAILABLE_MESSAGE = "The transfer is unavailable."
 TURN_PROVIDER_UNAVAILABLE_MESSAGE = "TURN credentials are temporarily unavailable."
@@ -95,7 +95,7 @@ class TurnCredentialService:
         transfer_id: UUID,
         network_identifier: str,
     ) -> TurnCredentials:
-        """Issue credentials only for an active participant in an accepted transfer."""
+        """Issue credentials for an active participant before recipient acceptance."""
 
         current = _utc_now(self._clock())
         try:

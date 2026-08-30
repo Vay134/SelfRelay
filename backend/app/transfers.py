@@ -23,7 +23,7 @@ TRANSFER_REQUEST_LIFETIME = timedelta(minutes=10)
 TRANSFER_ACTIVE_STATUSES = frozenset(
     {"offered", "accepted", "negotiating", "connected", "transferring"}
 )
-TRANSFER_PEER_KEY_STATUSES = frozenset({"accepted", "negotiating"})
+TRANSFER_PEER_KEY_STATUSES = frozenset({"offered", "accepted", "negotiating"})
 MAX_ACTIVE_TRANSFERS_PER_ACCOUNT = 8
 MAX_ACTIVE_TRANSFERS_PER_DEVICE = 4
 

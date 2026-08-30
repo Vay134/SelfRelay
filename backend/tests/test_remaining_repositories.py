@@ -200,7 +200,7 @@ def test_expiry_cleanup_uses_one_transaction_and_a_bound_for_each_table() -> Non
         assert result == {
             "app_sessions": 1,
             "device_challenges": 1,
-            "pairing_requests": 1,
+            "device_linking_otps": 1,
             "transfer_requests": 1,
             "websocket_tickets": 1,
             "security_events": 1,

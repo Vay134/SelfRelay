@@ -18,7 +18,7 @@ class AccountRecord:
     email_normalized: str
     device_epoch: int
     created_at: datetime
-    recovered_at: datetime | None
+    email_fallback_at: datetime | None
     deleted_at: datetime | None
 
 
@@ -36,7 +36,7 @@ class DeviceRecord:
     created_at: datetime
     last_seen_at: datetime
     revoked_at: datetime | None
-    approved_by_device_id: UUID | None
+    linked_by_device_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,24 +72,18 @@ class DeviceChallengeRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class PairingRequestRecord:
-    """One account-owned request to enroll a new trusted device."""
+class DeviceLinkingOtpRecord:
+    """One short-lived, hashed device-linking code."""
 
     id: UUID
     user_id: UUID
-    requested_public_key_spki: bytes
-    requested_fingerprint: bytes
-    requested_label: str
-    request_nonce: bytes
-    comparison_code_hash: bytes
+    issuing_device_id: UUID
+    otp_hash: bytes
     status: str
     attempt_count: int
-    approved_by_device_id: UUID | None
-    approval_signature: bytes | None
     created_at: datetime
     expires_at: datetime
     consumed_at: datetime | None
-    approval_nonce: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +151,7 @@ def account_from_row(row: Mapping[str, object]) -> AccountRecord:
         email_normalized=cast(str, row["email_normalized"]),
         device_epoch=cast(int, row["device_epoch"]),
         created_at=cast(datetime, row["created_at"]),
-        recovered_at=cast(datetime | None, row["recovered_at"]),
+        email_fallback_at=cast(datetime | None, row["email_fallback_at"]),
         deleted_at=cast(datetime | None, row["deleted_at"]),
     )
 
@@ -176,7 +170,7 @@ def device_from_row(row: Mapping[str, object]) -> DeviceRecord:
         created_at=cast(datetime, row["created_at"]),
         last_seen_at=cast(datetime, row["last_seen_at"]),
         revoked_at=cast(datetime | None, row["revoked_at"]),
-        approved_by_device_id=cast(UUID | None, row["approved_by_device_id"]),
+        linked_by_device_id=cast(UUID | None, row["linked_by_device_id"]),
     )
 
 
@@ -214,25 +208,19 @@ def device_challenge_from_row(row: Mapping[str, object]) -> DeviceChallengeRecor
     )
 
 
-def pairing_request_from_row(row: Mapping[str, object]) -> PairingRequestRecord:
-    """Convert a database row into an immutable pairing request record."""
+def device_linking_otp_from_row(row: Mapping[str, object]) -> DeviceLinkingOtpRecord:
+    """Convert a device-linking OTP row into an immutable record."""
 
-    return PairingRequestRecord(
+    return DeviceLinkingOtpRecord(
         id=cast(UUID, row["id"]),
         user_id=cast(UUID, row["user_id"]),
-        requested_public_key_spki=cast(bytes, row["requested_public_key_spki"]),
-        requested_fingerprint=cast(bytes, row["requested_fingerprint"]),
-        requested_label=cast(str, row["requested_label"]),
-        request_nonce=cast(bytes, row["request_nonce"]),
-        comparison_code_hash=cast(bytes, row["comparison_code_hash"]),
+        issuing_device_id=cast(UUID, row["issuing_device_id"]),
+        otp_hash=cast(bytes, row["otp_hash"]),
         status=cast(str, row["status"]),
         attempt_count=cast(int, row["attempt_count"]),
-        approved_by_device_id=cast(UUID | None, row["approved_by_device_id"]),
-        approval_signature=cast(bytes | None, row["approval_signature"]),
         created_at=cast(datetime, row["created_at"]),
         expires_at=cast(datetime, row["expires_at"]),
         consumed_at=cast(datetime | None, row["consumed_at"]),
-        approval_nonce=cast(bytes | None, row.get("approval_nonce")),
     )
 
 

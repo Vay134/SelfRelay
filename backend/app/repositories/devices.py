@@ -15,7 +15,7 @@ from .base import (
     first_row,
     required_row,
 )
-from .models import AccountRecord, DeviceRecord, account_from_row, device_from_row
+from .models import DeviceRecord, device_from_row
 
 _DEVICE_COLUMNS = """
     id,
@@ -28,7 +28,7 @@ _DEVICE_COLUMNS = """
     created_at,
     last_seen_at,
     revoked_at,
-    approved_by_device_id
+    linked_by_device_id
 """
 
 
@@ -87,30 +87,33 @@ class DeviceRepository:
         label: str,
         signing_public_key_spki: bytes,
         fingerprint: bytes,
-        approved_by_device_id: UUID | None = None,
+        *,
+        linked_by_device_id: UUID | None = None,
+        device_id: UUID | None = None,
     ) -> DeviceRecord:
         """Create a current-epoch device after checking account ownership."""
 
         rows = await self._database.fetch(
             f"""INSERT INTO private.devices (
+                id,
                 user_id,
                 epoch,
                 label,
                 signing_public_key_spki,
                 fingerprint,
-                approved_by_device_id
+                linked_by_device_id
             )
-            SELECT account.id, $2, $3, $4, $5, $6
+            SELECT COALESCE($2::uuid, gen_random_uuid()), account.id, $3, $4, $5, $6, $7
             FROM private.app_users AS account
             WHERE account.id = $1
               AND account.deleted_at IS NULL
-              AND account.device_epoch = $2
+              AND account.device_epoch = $3
               AND (
-                  $6::uuid IS NULL
+                  $7::uuid IS NULL
                   OR EXISTS (
                       SELECT 1
                       FROM private.devices AS approver
-                      WHERE approver.id = $6
+                      WHERE approver.id = $7
                         AND approver.user_id = account.id
                         AND approver.status = 'active'
                         AND approver.epoch = account.device_epoch
@@ -118,13 +121,77 @@ class DeviceRepository:
               )
             RETURNING {_DEVICE_COLUMNS}""",
             account_id,
+            device_id,
             epoch,
             label,
             signing_public_key_spki,
             fingerprint,
-            approved_by_device_id,
+            linked_by_device_id,
         )
         return device_from_row(required_row(rows))
+
+    async def register_for_email(
+        self,
+        account_id: UUID,
+        epoch: int,
+        label: str,
+        signing_public_key_spki: bytes,
+        fingerprint: bytes,
+        device_id: UUID,
+    ) -> DeviceRecord:
+        """Activate this key or register it without changing other devices."""
+
+        database = cast(TransactionalRepositoryDatabase, self._database)
+        async with database.transaction() as transaction_database:
+            existing_rows = await transaction_database.fetch(
+                f"""SELECT {_DEVICE_COLUMNS}
+                FROM private.devices
+                WHERE user_id = $1 AND fingerprint = $2
+                FOR UPDATE""",
+                account_id,
+                bytes(fingerprint),
+            )
+            existing = first_row(existing_rows)
+            if existing is not None:
+                existing_device = device_from_row(existing)
+                if existing_device.status == "revoked":
+                    raise ValueError("revoked devices cannot be reactivated")
+                rows = await transaction_database.fetch(
+                    f"""UPDATE private.devices
+                    SET status = 'active',
+                        label = $3,
+                        last_seen_at = CURRENT_TIMESTAMP
+                    WHERE user_id = $1 AND fingerprint = $2 AND epoch = $4
+                    RETURNING {_DEVICE_COLUMNS}""",
+                    account_id,
+                    bytes(fingerprint),
+                    label,
+                    epoch,
+                )
+                return device_from_row(required_row(rows))
+            rows = await transaction_database.fetch(
+                f"""INSERT INTO private.devices (
+                    id,
+                    user_id,
+                    epoch,
+                    label,
+                    signing_public_key_spki,
+                    fingerprint
+                )
+                SELECT $1, account.id, $2, $3, $4, $5
+                FROM private.app_users AS account
+                WHERE account.id = $6
+                  AND account.deleted_at IS NULL
+                  AND account.device_epoch = $2
+                RETURNING {_DEVICE_COLUMNS}""",
+                device_id,
+                epoch,
+                label,
+                bytes(signing_public_key_spki),
+                bytes(fingerprint),
+                account_id,
+            )
+            return device_from_row(required_row(rows))
 
     async def touch_last_seen(
         self,
@@ -201,6 +268,42 @@ class DeviceRepository:
                 )
         return device
 
+    async def logout_with_sessions(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        reason: str = "logout",
+    ) -> DeviceRecord | None:
+        """Mark a device inactive and revoke every session on that device."""
+
+        database = cast(TransactionalRepositoryDatabase, self._database)
+        device: DeviceRecord | None = None
+        async with database.transaction() as transaction_database:
+            rows = await transaction_database.fetch(
+                f"""UPDATE private.devices
+                SET status = CASE WHEN status = 'revoked' THEN status ELSE 'inactive' END
+                WHERE user_id = $1 AND id = $2
+                RETURNING {_DEVICE_COLUMNS}""",
+                account_id,
+                device_id,
+            )
+            row = first_row(rows)
+            if row is not None:
+                device = device_from_row(row)
+                await transaction_database.fetch(
+                    """UPDATE private.app_sessions
+                    SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
+                        revocation_reason = $3
+                    WHERE user_id = $1
+                      AND device_id = $2
+                      AND revoked_at IS NULL
+                    RETURNING id""",
+                    account_id,
+                    device_id,
+                    reason,
+                )
+        return device
+
     async def revoke(
         self,
         account_id: UUID,
@@ -214,7 +317,7 @@ class DeviceRepository:
     async def revoke_all_for_account(
         self,
         account_id: UUID,
-        reason: str = "recovery",
+        reason: str = "account_cleanup",
     ) -> int:
         """Revoke every account device and its sessions in one transaction."""
 
@@ -241,68 +344,6 @@ class DeviceRepository:
             )
         return len(rows)
 
-    async def recover_and_register(
-        self,
-        account_id: UUID,
-        label: str,
-        signing_public_key_spki: bytes,
-        fingerprint: bytes,
-    ) -> tuple[AccountRecord, DeviceRecord]:
-        """Rotate an account epoch, revoke old state, and register a device atomically."""
-
-        database = cast(TransactionalRepositoryDatabase, self._database)
-        async with database.transaction() as transaction_database:
-            account_rows = await transaction_database.fetch(
-                """UPDATE private.app_users
-                SET device_epoch = device_epoch + 1,
-                    recovered_at = CURRENT_TIMESTAMP
-                WHERE id = $1 AND deleted_at IS NULL
-                RETURNING id, supabase_user_id, email_normalized, device_epoch,
-                    created_at, recovered_at, deleted_at""",
-                account_id,
-            )
-            account_row = first_row(account_rows)
-            if account_row is None:
-                raise RuntimeError("account is unavailable for recovery")
-            await transaction_database.fetch(
-                """UPDATE private.devices
-                SET status = 'revoked',
-                    revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
-                WHERE user_id = $1
-                  AND status = 'active'
-                RETURNING id""",
-                account_id,
-            )
-            await transaction_database.fetch(
-                """UPDATE private.app_sessions
-                SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
-                    revocation_reason = 'recovery'
-                WHERE user_id = $1
-                  AND revoked_at IS NULL
-                RETURNING id""",
-                account_id,
-            )
-            device_rows = await transaction_database.fetch(
-                f"""INSERT INTO private.devices (
-                    user_id,
-                    epoch,
-                    label,
-                    signing_public_key_spki,
-                    fingerprint
-                )
-                SELECT account.id, account.device_epoch, $2, $3, $4
-                FROM private.app_users AS account
-                WHERE account.id = $1
-                  AND account.deleted_at IS NULL
-                RETURNING {_DEVICE_COLUMNS}""",
-                account_id,
-                label,
-                signing_public_key_spki,
-                fingerprint,
-            )
-            device_row = required_row(device_rows)
-        return account_from_row(account_row), device_from_row(device_row)
-
     async def list_by_account(self, account_id: UUID) -> list[DeviceRecord]:
         """Compatibility name for callers that use ``by_account`` terminology."""
 
@@ -315,11 +356,9 @@ class InMemoryDeviceRepository:
     def __init__(
         self,
         session_repository: object | None = None,
-        account_store: object | None = None,
     ) -> None:
         self._records: dict[UUID, DeviceRecord] = {}
         self._session_repository = session_repository
-        self._account_store = account_store
         self._lock = threading.Lock()
 
     async def get_by_id(self, account_id: UUID, device_id: UUID) -> DeviceRecord | None:
@@ -354,11 +393,13 @@ class InMemoryDeviceRepository:
         label: str,
         signing_public_key_spki: bytes,
         fingerprint: bytes,
-        approved_by_device_id: UUID | None = None,
+        *,
+        linked_by_device_id: UUID | None = None,
+        device_id: UUID | None = None,
     ) -> DeviceRecord:
         created_at = datetime.now(UTC)
         record = DeviceRecord(
-            id=uuid4(),
+            id=device_id or uuid4(),
             user_id=account_id,
             epoch=epoch,
             label=label,
@@ -368,7 +409,7 @@ class InMemoryDeviceRepository:
             created_at=created_at,
             last_seen_at=created_at,
             revoked_at=None,
-            approved_by_device_id=approved_by_device_id,
+            linked_by_device_id=linked_by_device_id,
         )
         with self._lock:
             if any(
@@ -378,6 +419,54 @@ class InMemoryDeviceRepository:
                 raise ValueError("device fingerprint is already registered")
             self._records[record.id] = record
         return record
+
+    async def register_for_email(
+        self,
+        account_id: UUID,
+        epoch: int,
+        label: str,
+        signing_public_key_spki: bytes,
+        fingerprint: bytes,
+        device_id: UUID,
+    ) -> DeviceRecord:
+        with self._lock:
+            existing = next(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.user_id == account_id and record.fingerprint == bytes(fingerprint)
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.status == "revoked":
+                    raise ValueError("revoked devices cannot be reactivated")
+                updated = replace(
+                    existing,
+                    epoch=epoch,
+                    label=label,
+                    status="active",
+                    last_seen_at=datetime.now(UTC),
+                )
+                self._records[existing.id] = updated
+                return updated
+            return_record = DeviceRecord(
+                id=device_id,
+                user_id=account_id,
+                epoch=epoch,
+                label=label,
+                signing_public_key_spki=bytes(signing_public_key_spki),
+                fingerprint=bytes(fingerprint),
+                status="active",
+                created_at=datetime.now(UTC),
+                last_seen_at=datetime.now(UTC),
+                revoked_at=None,
+                linked_by_device_id=None,
+            )
+            if any(record.id == device_id for record in self._records.values()):
+                raise ValueError("device identifier is already registered")
+            self._records[device_id] = return_record
+            return return_record
 
     async def remove(self, account_id: UUID, device_id: UUID) -> bool:
         """Remove a just-created test device during a failed compound operation."""
@@ -439,6 +528,24 @@ class InMemoryDeviceRepository:
             await revoker(account_id, device_id, reason)
         return updated
 
+    async def logout_with_sessions(
+        self,
+        account_id: UUID,
+        device_id: UUID,
+        reason: str = "logout",
+    ) -> DeviceRecord | None:
+        with self._lock:
+            record = self._records.get(device_id)
+            if record is None or record.user_id != account_id:
+                return None
+            if record.status != "revoked":
+                record = replace(record, status="inactive")
+                self._records[device_id] = record
+        revoker = getattr(self._session_repository, "revoke_for_device", None)
+        if callable(revoker):
+            await revoker(account_id, device_id, reason)
+        return record
+
     async def revoke(
         self, account_id: UUID, device_id: UUID, reason: str = "device_revoked"
     ) -> DeviceRecord | None:
@@ -447,7 +554,7 @@ class InMemoryDeviceRepository:
     async def revoke_all_for_account(
         self,
         account_id: UUID,
-        reason: str = "recovery",
+        reason: str = "account_cleanup",
     ) -> int:
         with self._lock:
             targets = [
@@ -467,32 +574,6 @@ class InMemoryDeviceRepository:
             for record in targets:
                 await revoker(account_id, record.id, reason)
         return len(targets)
-
-    async def recover_and_register(
-        self,
-        account_id: UUID,
-        label: str,
-        signing_public_key_spki: bytes,
-        fingerprint: bytes,
-    ) -> tuple[AccountRecord, DeviceRecord]:
-        rotator = getattr(self._account_store, "rotate_epoch", None)
-        if not callable(rotator):
-            raise RuntimeError("account store cannot rotate epochs")
-        rotated = await rotator(account_id, recovered_at=datetime.now(UTC))
-        if rotated is None:
-            raise RuntimeError("account is unavailable for recovery")
-        await self.revoke_all_for_account(account_id, "recovery")
-        revoker = getattr(self._session_repository, "revoke_for_account", None)
-        if callable(revoker):
-            await revoker(account_id, "recovery")
-        device = await self.create(
-            account_id,
-            rotated.device_epoch,
-            label,
-            signing_public_key_spki,
-            fingerprint,
-        )
-        return rotated, device
 
 
 # Keep schema terminology available to callers that use the table name.

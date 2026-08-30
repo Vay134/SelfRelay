@@ -6,10 +6,10 @@ The repository contains a locally validated implementation through the hosting-a
 
 ## Version 1 scope
 
-- Passwordless account bootstrap and recovery through a Supabase email OTP
+- Passwordless account bootstrap and email fallback through a Supabase email OTP
 - Persistent, revocable application sessions stored in secure cookies
 - Per-device signing keys generated with the Web Crypto API
-- Approval of new devices from an existing trusted device
+- New-device linking with a one-time OTP from an active device
 - Direct browser-to-browser transfer through WebRTC
 - Cloudflare TURN fallback when a direct connection is unavailable
 - Application-layer encryption with ephemeral ECDH P-256, HKDF-SHA-256, and AES-256-GCM
@@ -63,6 +63,8 @@ Production uses a Google Cloud Run service in Singapore with zero minimum instan
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
 - [Authentication and device lifecycle](docs/authentication-and-devices.md)
+- [User flow](docs/user-flow.md)
+- [User-flow implementation plan](docs/user-flow-implementation-plan.md)
 - [Transfer protocol](docs/transfer-protocol.md)
 - [Data model](docs/data-model.md)
 - [Deployment](docs/deployment.md)

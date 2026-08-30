@@ -21,7 +21,8 @@ export type RegistrationChallenge = {
     fingerprint: string;
     protocol_version: number;
     challenge_version: number;
-    recovery: boolean;
+    fallback: boolean;
+    enrollment_method: 'email' | 'device_link' | string;
     payload: Record<string, unknown>;
 };
 
@@ -56,21 +57,17 @@ export type AuthenticatedResult = {
     device: AuthenticatedDevice;
     session: AuthenticatedSession;
     csrf_token: string;
-    recovery: boolean;
-    warning: string | null;
+    fallback: boolean;
+};
+
+export type DeviceLinkingOtp = {
+    message: string;
+    otp: string;
+    expires_at: string;
 };
 
 function jsonBody(value: unknown): string {
     return JSON.stringify(value);
-}
-
-function accountPath(recovery: boolean, suffix: 'challenge' | 'complete'): string {
-    if (recovery) {
-        return `/auth/recovery/${suffix}`;
-    }
-    return suffix === 'challenge'
-        ? '/auth/devices/registration-challenge'
-        : '/auth/devices/registration';
 }
 
 export async function startOtp(email: string): Promise<{ message: string }> {
@@ -91,9 +88,8 @@ export async function issueRegistrationChallenge(
     bootstrapToken: string,
     identity: DeviceIdentity,
     label: string,
-    recovery = false,
 ): Promise<RegistrationChallenge> {
-    return apiRequest<RegistrationChallenge>(accountPath(recovery, 'challenge'), {
+    return apiRequest<RegistrationChallenge>('/auth/devices/registration-challenge', {
         method: 'POST',
         body: jsonBody({
             bootstrap_token: bootstrapToken,
@@ -109,12 +105,43 @@ export async function completeRegistration(
     identity: DeviceIdentity,
 ): Promise<AuthenticatedResult> {
     const signature = await signChallenge(identity, challenge.payload);
-    return apiRequest<AuthenticatedResult>(accountPath(challenge.recovery, 'complete'), {
+    return apiRequest<AuthenticatedResult>('/auth/devices/registration', {
         method: 'POST',
         body: jsonBody({
             challenge_id: challenge.challenge_id,
             signature,
         }),
+    });
+}
+
+export async function issueDeviceLinkingOtp(): Promise<DeviceLinkingOtp> {
+    return apiRequest<DeviceLinkingOtp>('/auth/devices/linking-otp', { method: 'POST' });
+}
+
+export async function issueDeviceLinkingChallenge(
+    otp: string,
+    identity: DeviceIdentity,
+    label: string,
+): Promise<RegistrationChallenge> {
+    return apiRequest<RegistrationChallenge>('/auth/devices/linking-challenge', {
+        method: 'POST',
+        body: jsonBody({
+            otp,
+            device_id: identity.deviceId,
+            label,
+            public_key_spki: encodeBase64Url(identity.publicKeySpki),
+        }),
+    });
+}
+
+export async function completeDeviceLink(
+    challenge: RegistrationChallenge,
+    identity: DeviceIdentity,
+): Promise<AuthenticatedResult> {
+    const signature = await signChallenge(identity, challenge.payload);
+    return apiRequest<AuthenticatedResult>('/auth/devices/linking', {
+        method: 'POST',
+        body: jsonBody({ challenge_id: challenge.challenge_id, signature }),
     });
 }
 
@@ -160,13 +187,15 @@ export async function renameDevice(deviceId: string, label: string): Promise<Aut
     return body.device;
 }
 
-export async function revokeDevice(deviceId: string): Promise<AuthenticatedDevice> {
+export async function logoutDevice(deviceId: string): Promise<AuthenticatedDevice> {
     const body = await apiRequest<{ device: AuthenticatedDevice }>(
         `/auth/devices/${encodeURIComponent(deviceId)}`,
         { method: 'DELETE' },
     );
     return body.device;
 }
+
+export const revokeDevice = logoutDevice;
 
 export async function listSessions(): Promise<AuthenticatedSession[]> {
     const body = await apiRequest<{ sessions?: AuthenticatedSession[] }>('/auth/sessions');

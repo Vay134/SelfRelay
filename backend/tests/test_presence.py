@@ -232,7 +232,7 @@ def _device(account_id: UUID, device_id: UUID, label: str) -> DeviceRecord:
         created_at=now,
         last_seen_at=now,
         revoked_at=None,
-        approved_by_device_id=None,
+        linked_by_device_id=None,
     )
 
 

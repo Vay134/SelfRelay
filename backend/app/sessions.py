@@ -446,7 +446,7 @@ class InMemorySessionRepository:
     async def revoke_for_account(
         self,
         account_id: UUID,
-        reason: str = "recovery",
+        reason: str = "account_cleanup",
     ) -> int:
         current = datetime.now(UTC)
         with self._lock:

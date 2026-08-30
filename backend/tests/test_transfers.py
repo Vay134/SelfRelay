@@ -35,7 +35,7 @@ def _device(account_id: UUID, device_id: UUID) -> DeviceRecord:
         created_at=now,
         last_seen_at=now,
         revoked_at=None,
-        approved_by_device_id=None,
+        linked_by_device_id=None,
     )
 
 
@@ -244,8 +244,13 @@ def test_peer_device_key_requires_an_eligible_participant_and_current_epoch() ->
         service = TransferService(repository, device_repository=devices, clock=lambda: now)
 
         offered = await service.create_offer(account_id, sender_id, recipient_id)
-        with pytest.raises(TransferError):
-            await service.get_peer_device_key(account_id, offered.id, sender_id, 0)
+        peer_before_acceptance = await service.get_peer_device_key(
+            account_id,
+            offered.id,
+            sender_id,
+            0,
+        )
+        assert peer_before_acceptance.id == recipient_id
 
         accepted = await service.accept(account_id, offered.id, recipient_id)
         assert accepted.status == "accepted"

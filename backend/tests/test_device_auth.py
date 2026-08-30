@@ -162,13 +162,6 @@ def test_returning_device_challenge_is_one_time_and_rejects_tampering(client: Te
     old_cookie = client.cookies.get(SESSION_COOKIE_NAME)
     assert old_cookie
 
-    client.post(
-        "/auth/logout",
-        headers={
-            "Origin": APP_ORIGIN,
-            "X-CSRF-Token": cast(str, first["csrf_token"]),
-        },
-    )
     challenge = client.post(
         "/auth/devices/login/challenge",
         headers={"Origin": APP_ORIGIN},
@@ -222,42 +215,40 @@ def test_returning_device_challenge_is_one_time_and_rejects_tampering(client: Te
     assert old_cookie != client.cookies.get(SESSION_COOKIE_NAME)
 
 
-def test_recovery_rotates_epoch_revokes_old_session_and_old_device(client: TestClient) -> None:
+def test_email_fallback_adds_only_the_current_browser(client: TestClient) -> None:
     private_key, public_key = _new_key()
     first = _register(client, private_key, public_key)
-    old_cookie = client.cookies.get(SESSION_COOKIE_NAME)
-    assert old_cookie
-    recovery_private_key, recovery_public_key = _new_key()
+    fallback_private_key, fallback_public_key = _new_key()
     bootstrap = _bootstrap(client)
     challenge = client.post(
-        "/auth/recovery/challenge",
+        "/auth/devices/registration-challenge",
         headers={"Origin": APP_ORIGIN},
         json={
             "bootstrap_token": cast(str, bootstrap["bootstrap_token"]),
-            "public_key": _b64(recovery_public_key),
-            "label": "Recovery browser",
+            "public_key": _b64(fallback_public_key),
+            "label": "Fallback browser",
         },
     )
     assert challenge.status_code == 200
     challenge_body = cast(dict[str, object], challenge.json())
     completed = client.post(
-        "/auth/recovery/complete",
+        "/auth/devices/registration",
         headers={"Origin": APP_ORIGIN},
         json={
             "challenge_id": cast(str, challenge_body["challenge_id"]),
             "signature": _sign(
-                recovery_private_key,
+                fallback_private_key,
                 cast(dict[str, object], challenge_body["payload"]),
             ),
         },
     )
     assert completed.status_code == 200
     result = completed.json()
-    assert result["recovery"] is True
-    assert result["warning"]
-    recovered_device = cast(dict[str, object], result["device"])
+    assert result["fallback"] is True
+    assert "warning" not in result
+    fallback_device = cast(dict[str, object], result["device"])
     first_device = cast(dict[str, object], first["device"])
-    assert recovered_device["epoch"] == cast(int, first_device["epoch"]) + 1
+    assert fallback_device["epoch"] == first_device["epoch"]
 
     devices = client.get("/auth/devices", headers={"Origin": APP_ORIGIN})
     assert devices.status_code == 200
@@ -266,7 +257,7 @@ def test_recovery_rotates_epoch_revokes_old_session_and_old_device(client: TestC
         for device in devices.json()["devices"]
         if device["device_id"] == first_device["device_id"]
     )
-    assert old["status"] == "revoked"
+    assert old["status"] == "active"
 
 
 def test_expired_returning_device_challenge_is_rejected(
@@ -278,10 +269,6 @@ def test_expired_returning_device_challenge_is_rejected(
     account_id = cast(str, first["account_id"])
     first_device = cast(dict[str, object], first["device"])
     device_id = cast(str, first_device["device_id"])
-    client.post(
-        "/auth/logout",
-        headers={"Origin": APP_ORIGIN, "X-CSRF-Token": cast(str, first["csrf_token"])},
-    )
     challenge = client.post(
         "/auth/devices/login/challenge",
         headers={"Origin": APP_ORIGIN},
@@ -311,7 +298,7 @@ def test_expired_returning_device_challenge_is_rejected(
     assert expired.status_code == 401
 
 
-def test_renaming_and_revoking_device_blocks_existing_challenge(client: TestClient) -> None:
+def test_renaming_and_logging_out_device_blocks_existing_challenge(client: TestClient) -> None:
     private_key, public_key = _new_key()
     first = _register(client, private_key, public_key)
     account_id = cast(str, first["account_id"])
@@ -338,7 +325,8 @@ def test_renaming_and_revoking_device_blocks_existing_challenge(client: TestClie
         headers={"Origin": APP_ORIGIN, "X-CSRF-Token": csrf_token},
     )
     assert revoked.status_code == 200
-    assert revoked.json()["revoked"] is True
+    assert revoked.json()["logged_out"] is True
+    assert revoked.json()["device"]["status"] == "inactive"
     blocked = client.post(
         "/auth/devices/login",
         headers={"Origin": APP_ORIGIN},

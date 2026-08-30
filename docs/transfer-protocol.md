@@ -36,7 +36,7 @@ Each transfer uses fresh ECDH key pairs on both devices. The implementation drop
 FastAPI creates a random `transfer_id` after authorizing a sender and recipient on the same account. The server state follows this sequence:
 
 ```text
-offered -> accepted -> negotiating -> connected -> transferring -> completed
+offered -> negotiating -> connected -> metadata_ready -> accepted -> transferring -> completed
        \-> rejected
        \-> expired
        \-> cancelled
@@ -45,7 +45,7 @@ offered -> accepted -> negotiating -> connected -> transferring -> completed
 
 Only valid transitions are accepted. Terminal states cannot return to an active state. A reconnect creates a new transfer rather than reusing the identifier or cryptographic material.
 
-## Generic offer
+## Transfer offer and pre-accept metadata
 
 The initial notification contains:
 
@@ -55,18 +55,23 @@ The initial notification contains:
     "transfer_id": "uuid",
     "sender_device_id": "uuid",
     "recipient_device_id": "uuid",
+    "file_name": "example.bin",
+    "media_type": "application/octet-stream",
+    "byte_count": 0,
     "created_at": 0,
     "expires_at": 0
 }
 ```
 
-It does not contain the file name, MIME type, byte count, digest, or a user-supplied message. The receiver accepts or rejects this generic request.
+The sender selects the file after the peer connection is ready and before it sends this offer. The recipient receives the file name, MIME type, and byte count as plain text before accepting or rejecting. The server forwards these fields only to the intended recipient and does not store them. The sender signs the canonical offer metadata with its registered device key; the recipient verifies that signature before displaying it.
+
+The metadata is not encrypted because the recipient needs it before the encrypted file transfer begins. It is not a security verdict: the receiver must treat the name and MIME type as untrusted hints and must not automatically preview or open the file.
 
 ## Authenticated handshake
 
 ### Sender offer core
 
-After acceptance, the sender creates an ephemeral ECDH key pair and a 32-byte random nonce. It constructs:
+When the transfer starts, the sender creates an ephemeral ECDH key pair and a 32-byte random nonce. The recipient responds automatically to establish the authenticated connection; acceptance controls file-byte delivery, not connection setup. The sender constructs:
 
 ```json
 {
@@ -225,7 +230,7 @@ The backend may read signaling fields needed for routing and abuse prevention. I
 
 ## TURN credentials
 
-FastAPI issues TURN credentials only after the receiver accepts the offer. Credentials have a short TTL, are scoped as narrowly as Cloudflare permits, and are rate limited per account, device, transfer, and network source.
+FastAPI issues TURN credentials only for an authenticated transfer between two active devices. Credentials have a short TTL, are scoped as narrowly as Cloudflare permits, and are rate limited per account, device, transfer, and network source.
 
 The client includes STUN and TURN candidates according to browser ICE behavior. A test mode can force relay-only ICE so the fallback path is exercised before release.
 
@@ -246,4 +251,3 @@ Tests must demonstrate these statements:
 5. File metadata is unavailable before the encrypted channel is confirmed.
 6. A completed download has a verified sender signature, byte count, and SHA-256 digest.
 7. A device from another account cannot receive signaling or TURN credentials for the transfer.
-

@@ -65,7 +65,7 @@ def _device(account_id: UUID, device_id: UUID) -> DeviceRecord:
         created_at=NOW,
         last_seen_at=NOW,
         revoked_at=None,
-        approved_by_device_id=None,
+        linked_by_device_id=None,
     )
 
 

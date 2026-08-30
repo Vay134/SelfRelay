@@ -14,7 +14,7 @@ _ACCOUNT_COLUMNS = """
     email_normalized,
     device_epoch,
     created_at,
-    recovered_at,
+    email_fallback_at,
     deleted_at
 """
 
@@ -80,22 +80,16 @@ class AccountRepository:
         )
         return account_from_row(required_row(rows))
 
-    async def rotate_epoch(
-        self,
-        account_id: UUID,
-        *,
-        recovered_at: datetime,
-    ) -> AccountRecord | None:
-        """Advance an account epoch and record the recovery time."""
+    async def mark_email_fallback(self, account_id: UUID, at: datetime) -> AccountRecord | None:
+        """Record a successful email fallback without changing the device epoch."""
 
         rows = await self._database.fetch(
             f"""UPDATE private.app_users
-            SET device_epoch = device_epoch + 1,
-                recovered_at = $2
+            SET email_fallback_at = $2
             WHERE id = $1 AND deleted_at IS NULL
             RETURNING {_ACCOUNT_COLUMNS}""",
             account_id,
-            recovered_at,
+            at,
         )
         row = first_row(rows)
         return None if row is None else account_from_row(row)

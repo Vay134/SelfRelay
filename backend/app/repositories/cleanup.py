@@ -57,23 +57,16 @@ _CHALLENGE_CLEANUP_QUERY = """DELETE FROM private.device_challenges AS challenge
     )
     RETURNING challenge.id"""
 
-_PAIRING_CLEANUP_QUERY = """DELETE FROM private.pairing_requests AS request
-    WHERE request.ctid IN (
+_LINKING_OTP_CLEANUP_QUERY = """DELETE FROM private.device_linking_otps AS otp
+    WHERE otp.ctid IN (
         SELECT candidate.ctid
-        FROM private.pairing_requests AS candidate
-        WHERE (
-            candidate.status IN ('rejected', 'expired', 'consumed')
-            AND COALESCE(candidate.consumed_at, candidate.expires_at)
-                <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
-        )
-        OR (
-            candidate.status IN ('pending', 'approved')
-            AND candidate.expires_at <= CURRENT_TIMESTAMP
-        )
+        FROM private.device_linking_otps AS candidate
+        WHERE candidate.status IN ('consumed', 'expired')
+           OR candidate.expires_at <= CURRENT_TIMESTAMP
         ORDER BY COALESCE(candidate.consumed_at, candidate.expires_at)
         LIMIT $1
     )
-    RETURNING request.id"""
+    RETURNING otp.id"""
 
 _TRANSFER_CLEANUP_QUERY = """DELETE FROM private.transfer_requests AS transfer
     WHERE transfer.ctid IN (
@@ -147,9 +140,9 @@ class ExpiryCleanupRepository:
                     _CHALLENGE_CLEANUP_QUERY,
                     batch_size,
                 ),
-                "pairing_requests": await _delete_batch(
+                "device_linking_otps": await _delete_batch(
                     transaction_database,
-                    _PAIRING_CLEANUP_QUERY,
+                    _LINKING_OTP_CLEANUP_QUERY,
                     batch_size,
                 ),
                 "transfer_requests": await _delete_batch(
@@ -216,13 +209,13 @@ class ExpiryCleanupRepository:
 
         return await self._cleanup_one(_CHALLENGE_CLEANUP_QUERY, batch_size)
 
-    async def cleanup_pairing_requests(
+    async def cleanup_device_linking_otps(
         self,
         batch_size: int = DEFAULT_CLEANUP_BATCH_SIZE,
     ) -> int:
-        """Delete expired or retained pairing requests in one bounded batch."""
+        """Delete consumed or expired device-linking codes in one bounded batch."""
 
-        return await self._cleanup_one(_PAIRING_CLEANUP_QUERY, batch_size)
+        return await self._cleanup_one(_LINKING_OTP_CLEANUP_QUERY, batch_size)
 
     async def cleanup_transfers(self, batch_size: int = DEFAULT_CLEANUP_BATCH_SIZE) -> int:
         """Delete terminal transfer records past their retention deadline."""

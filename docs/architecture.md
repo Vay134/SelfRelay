@@ -63,7 +63,7 @@ FastAPI is the only public application backend. Its responsibilities are:
 - creating opaque application sessions and CSRF tokens
 - issuing and checking device-authentication challenges
 - registering, listing, and revoking devices
-- coordinating pairing approval
+- creating and consuming device-linking OTPs
 - tracking online device presence
 - forwarding WebRTC descriptions and ICE candidates
 - issuing short-lived TURN credentials after authorization
@@ -80,7 +80,7 @@ The backend package exposes only minimal wake, readiness, and authenticated prob
 
 ### Supabase
 
-Supabase Auth proves control of an email address for account bootstrap and recovery. Supabase PostgreSQL stores application records in a private schema. The frontend does not receive the service role key and does not query application tables directly.
+Supabase Auth proves control of an email address for account bootstrap and email fallback. Supabase PostgreSQL stores application records in a private schema. The frontend does not receive the service role key and does not query application tables directly.
 
 FastAPI connects with a dedicated database role limited to the tables and operations it needs. Migrations own schema changes. If any table is placed in an exposed schema, it must have row-level security and must not grant broad access to `anon` or `authenticated`.
 
@@ -90,7 +90,7 @@ Pages hosts the static Vite build at its assigned `pages.dev` hostname and sets 
 
 ### Cloudflare TURN
 
-TURN is a fallback relay for WebRTC. FastAPI obtains or creates time-limited credentials only for an authenticated, accepted transfer. The relay can observe IP addresses, timing, and volume, but application encryption prevents it from reading the manifest or file.
+TURN is a fallback relay for WebRTC. FastAPI obtains or creates time-limited credentials only for an authenticated transfer between active devices. The relay can observe IP addresses, timing, and volume, but application encryption prevents it from reading the manifest or file.
 
 ### SMTP provider
 
@@ -107,7 +107,7 @@ The browser does not call the Cloud Run origin directly. HTTP and WebSocket requ
 
 ## Authentication boundary
 
-The browser never stores a Supabase refresh token. During email bootstrap or recovery, FastAPI completes the OTP exchange, validates the returned identity, creates an application user or recovery transaction, and issues its own opaque session.
+The browser never stores a Supabase refresh token. During email bootstrap or fallback, FastAPI completes the OTP exchange, validates the returned identity, creates or links the application device, and issues its own opaque session without changing the account's other devices.
 
 The session cookie contains a random identifier, not a JWT or user data. The database stores only its cryptographic hash. FastAPI checks revocation, idle expiry, absolute expiry, the associated device, and the account device epoch on each authenticated request.
 
@@ -130,17 +130,17 @@ sequenceDiagram
     participant R as Receiver
     participant T as TURN if needed
 
-    S->>API: Create generic transfer offer
-    API->>R: Notify incoming offer
-    R->>API: Accept offer
-    API->>S: Offer accepted
-    S->>API: Signed SDP offer and ephemeral key
+    S->>API: Start transfer and request TURN if needed
+    S->>R: Signed SDP offer and ephemeral key
     API->>R: Forward offer
     R->>API: Signed SDP answer and ephemeral key
     API->>S: Forward answer
     S-->>R: ICE negotiation
     S-->>T: Allocate relay if direct route fails
     R-->>T: Connect to relay if needed
+    S->>R: Signed file name, type, and size
+    R->>API: Accept offer
+    API->>S: Offer accepted
     S->>R: Encrypted manifest
     S->>R: Encrypted file chunks
     S->>R: Encrypted signed completion record
@@ -149,11 +149,11 @@ sequenceDiagram
     R->>API: Record terminal status
 ```
 
-The generic offer does not contain a file name, MIME type, or size. The receiver learns those values from the encrypted manifest after accepting and completing the authenticated handshake.
+The sender selects a file once the peer connection is ready. The recipient receives signed file name, MIME type, and size before accepting. FastAPI forwards this metadata only to the intended recipient and does not store it. The encrypted manifest repeats the values and remains the authoritative transfer framing data.
 
 ## Availability and scaling
 
-Version 1 runs a Cloud Run service in `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and one Uvicorn worker. The service scales to zero when idle and uses a disposable container filesystem. In-memory presence is acceptable only as a cache; authoritative sessions, devices, offers, and pairing records live in PostgreSQL. A process restart or cold start disconnects WebSockets and cancels active negotiations, but the availability wrapper wakes the API first and the existing presence client can reconnect and begin a new transfer.
+Version 1 runs a Cloud Run service in `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and one Uvicorn worker. The service scales to zero when idle and uses a disposable container filesystem. In-memory presence is acceptable only as a cache; authoritative sessions, devices, offers, and device-linking records live in PostgreSQL. A process restart or cold start disconnects WebSockets and cancels active negotiations, but the availability wrapper wakes the API first and the existing presence client can reconnect and begin a new transfer.
 
 Running more than one backend instance would require shared presence and signaling fanout, such as Redis or another pub/sub system. That work is deferred until the single instance becomes a measured limit. Cloud Run WebSockets are HTTP requests subject to the configured timeout, which is 60 minutes for version 1; clients must reconnect after timeouts and platform interruptions. Deployments avoid traffic splitting because an old revision may continue serving an existing socket while a new revision receives new requests.
 

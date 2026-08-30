@@ -1,226 +1,140 @@
+from __future__ import annotations
+
 import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from app.repositories import (
-    DeviceChallengeRepository,
-    PairingRequestRepository,
-    WebSocketTicketRepository,
-)
+from app.repositories import DeviceLinkingOtpRepository
 
 
-class OwnershipRecordingDatabase:
-    def __init__(self, owner_id: UUID, row: dict[str, object]) -> None:
-        self.owner_id = owner_id
-        self.row = row
-        self.calls: list[tuple[str, tuple[object, ...]]] = []
-
-    async def fetch(self, query: str, *parameters: object) -> list[object]:
-        self.calls.append((query, parameters))
-        return [self.row] if parameters and parameters[0] == self.owner_id else []
-
-
-class AtomicOneTimeDatabase:
-    def __init__(self, owner_id: UUID, row: dict[str, object]) -> None:
-        self.owner_id = owner_id
-        self.row = row
+class RecordingDatabase:
+    def __init__(self, otp_row: dict[str, object], device_row: dict[str, object]) -> None:
+        self.otp_row = otp_row
+        self.device_row = device_row
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.transaction_events: list[str] = []
-        self._consumed = False
-        self._lock = asyncio.Lock()
+        self.consumed = False
 
-    def transaction(self) -> "AtomicOneTimeDatabase":
+    def transaction(self) -> 'RecordingDatabase':
         return self
 
-    async def __aenter__(self) -> "AtomicOneTimeDatabase":
-        self.transaction_events.append("begin")
+    async def __aenter__(self) -> 'RecordingDatabase':
+        self.transaction_events.append('begin')
         return self
 
-    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        self.transaction_events.append("commit" if exc_type is None else "rollback")
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_value: object,
+        traceback: object,
+    ) -> None:
+        self.transaction_events.append('rollback' if exc_type else 'commit')
 
     async def fetch(self, query: str, *parameters: object) -> list[object]:
         self.calls.append((query, parameters))
-        async with self._lock:
-            if not parameters or parameters[0] != self.owner_id or self._consumed:
+        if query.lstrip().startswith('UPDATE private.device_linking_otps AS otp'):
+            if self.consumed:
                 return []
-            self._consumed = True
-            consumed_row = self.row.copy()
-            consumed_row["consumed_at"] = datetime(2026, 1, 2, tzinfo=UTC)
-            if "pairing_requests" in query:
-                consumed_row["status"] = "consumed"
-            return [consumed_row]
+            self.consumed = True
+            return [{'id': self.otp_row['id']}]
+        if query.lstrip().startswith('INSERT INTO private.devices'):
+            return [self.device_row]
+        return [self.otp_row]
 
 
-def _challenge_row() -> dict[str, object]:
+def _otp_row(account_id: UUID) -> dict[str, object]:
     return {
-        "id": uuid4(),
-        "device_id": uuid4(),
-        "nonce_hash": b"n" * 32,
-        "origin": "https://app.example.test",
-        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
-        "expires_at": datetime(2026, 1, 1, 0, 5, tzinfo=UTC),
-        "consumed_at": None,
-        "attempt_count": 0,
+        'id': uuid4(),
+        'user_id': account_id,
+        'issuing_device_id': uuid4(),
+        'otp_hash': b'h' * 32,
+        'status': 'active',
+        'attempt_count': 0,
+        'created_at': datetime(2026, 1, 1, tzinfo=UTC),
+        'expires_at': datetime(2026, 1, 1, 0, 10, tzinfo=UTC),
+        'consumed_at': None,
     }
 
 
-def _pairing_row(account_id: UUID) -> dict[str, object]:
+def _device_row(account_id: UUID, device_id: UUID) -> dict[str, object]:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
     return {
-        "id": uuid4(),
-        "user_id": account_id,
-        "requested_public_key_spki": b"spki",
-        "requested_fingerprint": b"f" * 32,
-        "requested_label": "Laptop",
-        "request_nonce": b"r" * 16,
-        "comparison_code_hash": b"c" * 32,
-        "status": "approved",
-        "attempt_count": 0,
-        "approved_by_device_id": uuid4(),
-        "approval_signature": b"s" * 32,
-        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
-        "expires_at": datetime(2026, 1, 1, 0, 10, tzinfo=UTC),
-        "consumed_at": None,
+        'id': device_id,
+        'user_id': account_id,
+        'epoch': 0,
+        'label': 'Linked browser',
+        'signing_public_key_spki': b'spki',
+        'fingerprint': b'f' * 32,
+        'status': 'active',
+        'created_at': now,
+        'last_seen_at': now,
+        'revoked_at': None,
+        'linked_by_device_id': uuid4(),
     }
 
 
-def _ticket_row() -> dict[str, object]:
-    return {
-        "id": uuid4(),
-        "session_id": uuid4(),
-        "token_hash": b"t" * 32,
-        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
-        "expires_at": datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
-        "consumed_at": None,
-    }
-
-
-def test_one_time_lookups_isolate_foreign_accounts() -> None:
-    async def exercise() -> None:
-        owner_id = uuid4()
-        foreign_id = uuid4()
-
-        challenge_row = _challenge_row()
-        challenge_id = challenge_row["id"]
-        assert isinstance(challenge_id, UUID)
-        challenge_database = OwnershipRecordingDatabase(owner_id, challenge_row)
-        challenge_repository = DeviceChallengeRepository(challenge_database)
-        assert await challenge_repository.get_by_id(owner_id, challenge_id) is not None
-        assert await challenge_repository.get_by_id(foreign_id, challenge_id) is None
-
-        pairing_row = _pairing_row(owner_id)
-        pairing_id = pairing_row["id"]
-        assert isinstance(pairing_id, UUID)
-        pairing_database = OwnershipRecordingDatabase(owner_id, pairing_row)
-        pairing_repository = PairingRequestRepository(pairing_database)
-        assert await pairing_repository.get_by_id(owner_id, pairing_id) is not None
-        assert await pairing_repository.get_by_id(foreign_id, pairing_id) is None
-
-        ticket_row = _ticket_row()
-        ticket_id = ticket_row["id"]
-        assert isinstance(ticket_id, UUID)
-        ticket_database = OwnershipRecordingDatabase(owner_id, ticket_row)
-        ticket_repository = WebSocketTicketRepository(ticket_database)
-        assert await ticket_repository.get_by_id(owner_id, ticket_id) is not None
-        assert await ticket_repository.get_by_id(foreign_id, ticket_id) is None
-
-        assert all(
-            parameters[0] in (owner_id, foreign_id) for _, parameters in challenge_database.calls
-        )
-        assert all(
-            "user_id = $1" in query or "account.id = $1" in query
-            for query, _ in pairing_database.calls
-        )
-        assert all("account.id = $1" in query for query, _ in ticket_database.calls)
-
-    asyncio.run(exercise())
-
-
-def test_pending_pairing_lookup_expires_stale_matching_request() -> None:
+def test_linking_otp_lookup_is_account_bound_and_expiry_checked() -> None:
     async def exercise() -> None:
         account_id = uuid4()
-        row = _pairing_row(account_id)
-        row["status"] = "pending"
-        database = OwnershipRecordingDatabase(account_id, row)
-        repository = PairingRequestRepository(database)
+        row = _otp_row(account_id)
+        database = RecordingDatabase(row, _device_row(account_id, uuid4()))
+        repository = DeviceLinkingOtpRepository(database)
 
-        assert await repository.get_pending_by_fingerprint(account_id, b"f" * 32) is not None
-
+        found = await repository.get_active_by_hash(cast_bytes(row['otp_hash']))
+        assert found is not None
+        assert found.user_id == account_id
         query, parameters = database.calls[0]
-        assert parameters == (account_id, b"f" * 32)
-        assert "UPDATE private.pairing_requests" in query
-        assert "SET status = 'expired'" in query
-        assert "expires_at <= CURRENT_TIMESTAMP" in query
+        assert parameters == (row['otp_hash'],)
+        assert 'otp.status = \'active\'' in query
+        assert 'otp.expires_at > CURRENT_TIMESTAMP' in query
 
     asyncio.run(exercise())
 
 
-def test_one_time_consumption_allows_only_one_concurrent_winner() -> None:
+def test_linking_otp_redemption_consumes_once_with_the_new_device() -> None:
     async def exercise() -> None:
         account_id = uuid4()
+        row = _otp_row(account_id)
+        issuer_id = cast_uuid(row['issuing_device_id'])
+        device_id = uuid4()
+        database = RecordingDatabase(row, _device_row(account_id, device_id))
+        repository = DeviceLinkingOtpRepository(database)
 
-        challenge_row = _challenge_row()
-        challenge_id = challenge_row["id"]
-        assert isinstance(challenge_id, UUID)
-        challenge_database = AtomicOneTimeDatabase(account_id, challenge_row)
-        challenge_repository = DeviceChallengeRepository(challenge_database)
-        challenge_results = await asyncio.gather(
-            challenge_repository.consume(account_id, challenge_id),
-            challenge_repository.consume(account_id, challenge_id),
+        results = await asyncio.gather(
+            repository.consume_and_register(
+                cast_uuid(row['id']),
+                account_id,
+                issuer_id,
+                0,
+                device_id,
+                'Linked browser',
+                b'spki',
+                b'f' * 32,
+            ),
+            repository.consume_and_register(
+                cast_uuid(row['id']),
+                account_id,
+                issuer_id,
+                0,
+                uuid4(),
+                'Second browser',
+                b'spki2',
+                b'g' * 32,
+            ),
         )
-        assert sum(result is not None for result in challenge_results) == 1
-        assert all(
-            "consumed_at IS NULL" in query and "expires_at > CURRENT_TIMESTAMP" in query
-            for query, _ in challenge_database.calls
-        )
-
-        pairing_row = _pairing_row(account_id)
-        pairing_id = pairing_row["id"]
-        assert isinstance(pairing_id, UUID)
-        pairing_database = AtomicOneTimeDatabase(account_id, pairing_row)
-        pairing_repository = PairingRequestRepository(pairing_database)
-        pairing_results = await asyncio.gather(
-            pairing_repository.consume(account_id, pairing_id),
-            pairing_repository.consume(account_id, pairing_id),
-        )
-        assert sum(result is not None for result in pairing_results) == 1
-        assert all(
-            "status = 'approved'" in query and "consumed_at IS NULL" in query
-            for query, _ in pairing_database.calls
-        )
-
-        ticket_row = _ticket_row()
-        token_hash = ticket_row["token_hash"]
-        assert isinstance(token_hash, bytes)
-        ticket_database = AtomicOneTimeDatabase(account_id, ticket_row)
-        ticket_repository = WebSocketTicketRepository(ticket_database)
-        ticket_results = await asyncio.gather(
-            ticket_repository.consume(account_id, token_hash),
-            ticket_repository.consume(account_id, token_hash),
-        )
-        assert sum(result is not None for result in ticket_results) == 1
-        assert all(
-            "token_hash = $2" in query and "consumed_at IS NULL" in query
-            for query, _ in ticket_database.calls
-        )
-
-        assert challenge_database.transaction_events == [
-            "begin",
-            "commit",
-            "begin",
-            "commit",
-        ]
-        assert pairing_database.transaction_events == [
-            "begin",
-            "commit",
-            "begin",
-            "commit",
-        ]
-        assert ticket_database.transaction_events == [
-            "begin",
-            "commit",
-            "begin",
-            "commit",
-        ]
+        assert sum(result is not None for result in results) == 1
+        assert database.transaction_events == ['begin', 'commit', 'begin', 'commit']
+        assert any('status = \'active\'' in query for query, _ in database.calls)
+        assert any('linked_by_device_id' in query for query, _ in database.calls)
 
     asyncio.run(exercise())
+
+
+def cast_uuid(value: object) -> UUID:
+    assert isinstance(value, UUID)
+    return value
+
+
+def cast_bytes(value: object) -> bytes:
+    assert isinstance(value, bytes)
+    return value

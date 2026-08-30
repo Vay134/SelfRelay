@@ -27,7 +27,6 @@ from app.turn import (
     TURN_CREDENTIAL_TTL_SECONDS,
     TURN_PROVIDER_UNAVAILABLE_MESSAGE,
     TURN_RATE_LIMIT_MESSAGE,
-    TURN_UNAVAILABLE_MESSAGE,
 )
 
 APP_ORIGIN = "http://localhost:5173"
@@ -148,7 +147,7 @@ def _issue(client: TestClient, transfer_id: UUID, csrf_secret: str) -> httpx.Res
     )
 
 
-def test_turn_credentials_require_an_accepted_transfer_and_active_participant(
+def test_turn_credentials_require_an_active_participant(
     client: TestClient,
 ) -> None:
     account_id = uuid4()
@@ -160,9 +159,9 @@ def test_turn_credentials_require_an_accepted_transfer_and_active_participant(
 
     offered_id = _create_transfer(account_id, sender.id, recipient.id)
     offered = _issue(client, offered_id, session.csrf_secret)
-    assert offered.status_code == 409
-    assert offered.json() == {"detail": TURN_UNAVAILABLE_MESSAGE}
-    assert provider.requests == ()
+    assert offered.status_code == 200
+    assert set(offered.json()) == {"ice_servers", "expires_at"}
+    assert provider.requests[-1].transfer_id == str(offered_id)
 
     accepted_id = _create_transfer(account_id, sender.id, recipient.id, accepted=True)
     accepted = _issue(client, accepted_id, session.csrf_secret)
@@ -206,7 +205,7 @@ def test_turn_credentials_require_an_accepted_transfer_and_active_participant(
     outsider_session = _issue_session(client, account_id, outsider.id)
     non_participant = _issue(client, accepted_id, outsider_session.csrf_secret)
     assert non_participant.status_code == 409
-    assert len(provider.requests) == 1
+    assert len(provider.requests) == 2
 
 
 def test_turn_credentials_reject_foreign_and_unauthenticated_requests(client: TestClient) -> None:

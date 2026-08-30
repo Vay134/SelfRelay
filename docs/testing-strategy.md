@@ -34,8 +34,8 @@ The backend suite covers:
 - session token hashing, expiry, rotation, and revocation
 - CSRF and Origin checks
 - device challenge verification
-- pairing approval authorization and one-time consumption
-- account epoch changes during recovery
+- device-linking OTP authorization and one-time consumption
+- email fallback without other-device revocation
 - cross-account ownership rejection
 - transfer state transitions and expiry
 - WebSocket ticket consumption
@@ -66,7 +66,7 @@ Database tests apply every migration to an empty instance and verify:
 
 - required constraints and indexes exist
 - a cross-account transfer cannot be inserted
-- a pairing request cannot be consumed twice
+- a device-linking OTP cannot be consumed twice
 - session and device revocation are atomic
 - cleanup queries delete only expired records
 - the runtime role has its intended grants
@@ -81,11 +81,11 @@ Integration tests start FastAPI with a disposable database and fake Auth and TUR
 
 1. bootstrap, device registration, session use, and logout
 2. returning-device challenge login
-3. trusted-device pairing and rejection
-4. email recovery with epoch rotation
+3. device-linking OTP redemption and rejection
+4. email fallback without other-device change
 5. presence, offer, acceptance, signaling, and completion
 6. cancellation, expiry, and process restart behavior
-7. concurrent requests attempting to consume one challenge or pairing request
+7. concurrent requests attempting to consume one challenge or device-linking OTP
 8. availability wake/readiness, authenticated database-backed probe, and terminal failure behavior
 
 Every account-scoped endpoint receives an ownership-negative test. Identifiers from a second account must return the same safe failure regardless of whether the target exists.
@@ -108,8 +108,8 @@ Browser cases include:
 
 - first device registration and IndexedDB persistence
 - session restoration after a page reload
-- loss of IndexedDB and the resulting pairing requirement
-- two-device code comparison and approval
+- loss of IndexedDB and the resulting linking or email-fallback requirement
+- device-linking OTP redemption
 - direct WebRTC transfer of empty, small, odd-sized, and maximum-size files
 - forced TURN relay transfer
 - cancellation by either peer
@@ -118,7 +118,7 @@ Browser cases include:
 - tampered encrypted chunk and final digest
 - duplicate or skipped frame counter
 - malicious file name and MIME type
-- receiver rejection before metadata disclosure
+- receiver rejection after metadata disclosure and before file bytes
 - backend cold-start wake, bounded availability states, and WebSocket reconnect after restart
 
 Mobile checks keep the page in the foreground. Background transfer is expected to fail cleanly because it is outside version 1.
@@ -130,7 +130,7 @@ Mobile checks keep the page in the foreground. Background transfer is expected t
 - OTP endpoints return indistinguishable responses for known and unknown emails.
 - Rate limits apply before expensive provider calls.
 - A revoked device cannot obtain a session, socket ticket, or TURN credential.
-- Recovery invalidates old epochs and sessions.
+- Email fallback leaves existing devices and sessions unchanged while authorizing only the current device.
 - Supabase identity fields controlled by the user do not grant authorization.
 - Session cookies never appear in JavaScript storage, URLs, or logs.
 
@@ -150,9 +150,9 @@ Nonce tests generate many frames across transfers and assert uniqueness for each
 
 ### Abuse and availability
 
-Load tests target the cheapest public operations first: health checks, OTP start, pairing creation, socket tickets, WebSocket connects, offers, and ICE candidates. Tests verify bounded memory, bounded queues, timeouts, and useful 429 or 503 responses.
+Load tests target the cheapest public operations first: health checks, email OTP start, device-linking OTP creation, socket tickets, WebSocket connects, offers, and ICE candidates. Tests verify bounded memory, bounded queues, timeouts, and useful 429 or 503 responses.
 
-TURN tests confirm that an unauthenticated user, rejected transfer, expired transfer, or foreign device cannot obtain credentials.
+TURN tests confirm that an unauthenticated user, inactive device, expired transfer, or foreign device cannot obtain credentials.
 
 Availability tests confirm that wake/readiness and probe endpoints are rate-limited as appropriate, use capped timeouts and retries, and do not become a database or diagnostic oracle.
 
@@ -187,7 +187,7 @@ A public release requires:
 - no secret detected in source, build output, or history under review
 - an independent review of the threat model against the code
 - successful direct and forced-relay transfers
-- successful account bootstrap, pairing, revocation, and recovery
+- successful account bootstrap, device linking, device logout, and email fallback
 - successful Cloud Run cold-start wake, availability state handling, request-timeout reconnect, and presence reconnect
 - successful same-origin Pages gateway handling for HTTP, WebSockets, cookies, Origin, and CSRF checks
 - successful authenticated database-backed availability probe with no sensitive diagnostics

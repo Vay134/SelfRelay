@@ -295,10 +295,21 @@ async def current_session(
 @router.post("/session/logout", dependencies=[Depends(require_session_csrf)])
 @router.post("/logout", dependencies=[Depends(require_session_csrf)])
 async def logout(request: Request, response: Response) -> dict[str, object]:
-    """Revoke the authenticated session and expire its cookie."""
+    """Log out the current device, revoke its sessions, and expire its cookie."""
 
     session = await get_authenticated_session(request)
-    await _service_from_request(request).revoke(session.user_id, session.id, "logout")
+    device_store = getattr(request.app.state, "device_repository", None)
+    logout_device = getattr(device_store, "logout_with_sessions", None)
+    if callable(logout_device):
+        logged_out = await logout_device(session.user_id, session.device_id, "logout")
+        if logged_out is None:
+            await _service_from_request(request).revoke(session.user_id, session.id, "logout")
+        presence_manager = getattr(request.app.state, "presence_manager", None)
+        disconnect = getattr(presence_manager, "disconnect_device", None)
+        if callable(disconnect):
+            await disconnect(session.user_id, session.device_id)
+    else:
+        await _service_from_request(request).revoke(session.user_id, session.id, "logout")
     clear_session_cookie(response)
     return {"message": LOGOUT_MESSAGE, "logged_out": True}
 

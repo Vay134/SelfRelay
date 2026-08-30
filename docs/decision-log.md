@@ -34,7 +34,7 @@ Brevo was selected because it can verify an individual sender and deliver to ext
 
 Status: accepted
 
-Email OTP is reserved for the first device and account recovery. A registered device can start a new session by signing a server challenge. A new device normally obtains approval from an online trusted device through a short-lived pairing request.
+Email OTP is used for the first device and as a fallback when every device is logged out. A registered device can start a new session by signing a server challenge. An active device can generate a short-lived, one-time device-linking OTP for a new device, which proves possession of its newly generated key when redeeming it.
 
 ## D006: WebRTC data path
 
@@ -78,8 +78,8 @@ Version 1 uses the Cloudflare Pages `pages.dev` hostname as the public browser o
 
 Because a direct `pages.dev` to `run.app` browser call would make the host-only session cookie cross-site, a narrowly scoped Pages Function proxies HTTP and WebSocket control traffic to Cloud Run. The browser uses one Pages origin; FastAPI still performs authentication, authorization, exact Origin checks, CSRF protection, and rate limiting. A future custom domain must preserve this same-origin property or deliberately redesign the cookie boundary.
 
-## D012: version 1 recovery policy
+## D012: version 1 email fallback policy
 
 Status: accepted
 
-Email is the final recovery authority because MFA and recovery codes are outside version 1. Successful recovery increments the account device epoch and revokes application sessions. Previously registered devices must pair again.
+Email is the final fallback authority because MFA and recovery codes are outside version 1. A verified email OTP signs the current device in or adds it to the existing account without changing other devices. Email compromise can therefore add a device, which is an accepted version 1 limitation.

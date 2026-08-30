@@ -1322,6 +1322,8 @@ export const CONFIRMATION_BYTES = 32;
 export type FrameDirection = 's2r' | 'r2s';
 export type FrameType =
     | 'confirm'
+    | 'file_offer'
+    | 'accept'
     | 'manifest'
     | 'chunk'
     | 'complete'
@@ -1367,6 +1369,8 @@ const FRAME_TYPE_TO_CODE: Record<FrameType, number> = {
     receipt: 4,
     cancel: 5,
     error: 6,
+    file_offer: 7,
+    accept: 8,
 };
 
 const FRAME_CODE_TO_TYPE: Record<number, FrameType> = {
@@ -1377,6 +1381,8 @@ const FRAME_CODE_TO_TYPE: Record<number, FrameType> = {
     4: 'receipt',
     5: 'cancel',
     6: 'error',
+    7: 'file_offer',
+    8: 'accept',
 };
 
 function requireFrameDirection(value: unknown): FrameDirection {
@@ -1459,10 +1465,13 @@ function oppositeDirection(direction: FrameDirection): FrameDirection {
 }
 
 function validateFrameTypeDirection(direction: FrameDirection, type: FrameType): void {
-    if ((type === 'manifest' || type === 'chunk' || type === 'complete') && direction !== 's2r') {
+    if (
+        (type === 'file_offer' || type === 'manifest' || type === 'chunk' || type === 'complete') &&
+        direction !== 's2r'
+    ) {
         throw new ProtocolError('Frame type is not valid for this direction.', 'invalid_frame');
     }
-    if (type === 'receipt' && direction !== 'r2s') {
+    if ((type === 'receipt' || type === 'accept') && direction !== 'r2s') {
         throw new ProtocolError('Frame type is not valid for this direction.', 'invalid_frame');
     }
 }
@@ -1689,7 +1698,17 @@ function sequenceTypeAllowed(
         return previous === null;
     }
     if (previous === null || previous === 'confirm') {
-        return next === 'manifest' || next === 'receipt' || next === 'cancel' || next === 'error';
+        return (
+            next === 'file_offer' ||
+            next === 'accept' ||
+            next === 'manifest' ||
+            next === 'receipt' ||
+            next === 'cancel' ||
+            next === 'error'
+        );
+    }
+    if (next === 'manifest') {
+        return direction === 's2r' && previous === 'file_offer';
     }
     if (next === 'chunk') {
         return direction === 's2r' && (previous === 'manifest' || previous === 'chunk');
@@ -1698,7 +1717,7 @@ function sequenceTypeAllowed(
         return direction === 's2r' && (previous === 'manifest' || previous === 'chunk');
     }
     if (next === 'receipt') {
-        return direction === 'r2s' && previous === 'complete';
+        return direction === 'r2s' && (previous === 'complete' || previous === 'accept');
     }
     return next === 'cancel' || next === 'error';
 }

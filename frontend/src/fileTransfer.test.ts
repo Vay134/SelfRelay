@@ -131,7 +131,7 @@ describe('FileTransferEngine', () => {
         expect(recipient.receivedFile?.mediaType).toBe('text/plain');
         await expect(recipient.receivedFile?.blob.text()).resolves.toBe('abcdefghij');
         expect(progress).toEqual([4, 8, 10]);
-        expect(senderChannel.sent.length).toBe(1 + 1 + 3 + 1);
+        expect(senderChannel.sent.length).toBe(1 + 1 + 1 + 3 + 1);
     });
 
     it('rejects a file above the 250 MB limit before sending metadata', async () => {

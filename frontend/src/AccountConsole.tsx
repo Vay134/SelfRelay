@@ -1,18 +1,19 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useState } from 'react';
 
 import {
+    completeDeviceLink,
     completeDeviceLogin,
     completeRegistration,
+    issueDeviceLinkingChallenge,
+    issueDeviceLinkingOtp,
     issueDeviceLoginChallenge,
     issueRegistrationChallenge,
     listDevices,
-    listSessions,
-    logout,
+    logoutDevice,
     renameDevice,
-    revokeDevice,
     startOtp,
     verifyOtp,
-    type AuthenticatedSession,
+    type DeviceLinkingOtp,
     type DeviceLoginChallenge,
     type OtpBootstrap,
     type RegistrationChallenge,
@@ -27,6 +28,7 @@ import {
 import {
     DeviceKeyMissingError,
     DeviceStorageUnavailableError,
+    getDefaultDeviceLabel,
     getOrCreateDeviceIdentity,
     loadDeviceIdentity,
     type DeviceIdentity,
@@ -35,45 +37,29 @@ import {
 type AccountView =
     | 'checking'
     | 'signed-out'
+    | 'email'
     | 'otp-sent'
     | 'verified'
+    | 'linking'
     | 'challenge'
     | 'login-challenge'
     | 'authenticated'
     | 'error';
 
-type Confirmation = {
-    title: string;
-    description: string;
-    confirmLabel: string;
-    danger?: boolean;
-    action: () => Promise<void>;
-};
-
 const ACCOUNT_ID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-function formatFingerprint(fingerprint: string): string {
-    if (fingerprint.length <= 20) {
-        return fingerprint;
-    }
-    return `${fingerprint.slice(0, 10)}…${fingerprint.slice(-10)}`;
+function formatFingerprint(value: string): string {
+    return value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-12)}` : value;
 }
 
 function formatDate(value: string): string {
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-        return 'Unknown time';
-    }
-    return new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-    }).format(date);
-}
-
-function formatExpiry(value: string): string {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? 'Unknown expiry' : `Expires ${formatDate(value)}`;
+    return Number.isNaN(date.getTime())
+        ? 'Unknown time'
+        : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+              date,
+          );
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -89,535 +75,72 @@ function errorMessage(error: unknown, fallback: string): string {
     if (error instanceof DeviceKeyMissingError || error instanceof DeviceStorageUnavailableError) {
         return error.message;
     }
-    if (error instanceof Error && error.message) {
-        return error.message;
-    }
-    return fallback;
+    return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function ConfirmDialog({
-    confirmation,
-    busy,
-    onCancel,
-    onConfirm,
-}: {
-    confirmation: Confirmation | null;
-    busy: boolean;
-    onCancel: () => void;
-    onConfirm: () => void;
-}) {
-    const dialog = useRef<HTMLDivElement>(null);
-    const confirmButton = useRef<HTMLButtonElement>(null);
-    const previouslyFocused = useRef<HTMLElement | null>(null);
-
-    useEffect(() => {
-        if (!confirmation) {
-            return undefined;
-        }
-        previouslyFocused.current =
-            document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        confirmButton.current?.focus();
-        return () => {
-            if (previouslyFocused.current?.isConnected) {
-                previouslyFocused.current.focus();
-            }
-        };
-    }, [confirmation]);
-
-    useEffect(() => {
-        if (!confirmation) {
-            return undefined;
-        }
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && !busy) {
-                event.preventDefault();
-                onCancel();
-                return;
-            }
-            if (event.key !== 'Tab') {
-                return;
-            }
-            const focusable = dialog.current?.querySelectorAll<HTMLElement>(
-                'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-            );
-            if (!focusable?.length) {
-                event.preventDefault();
-                return;
-            }
-            const first = focusable[0];
-            const last = focusable[focusable.length - 1];
-            const active = document.activeElement;
-            if (!dialog.current?.contains(active)) {
-                event.preventDefault();
-                first.focus();
-            } else if (event.shiftKey && active === first) {
-                event.preventDefault();
-                last.focus();
-            } else if (!event.shiftKey && active === last) {
-                event.preventDefault();
-                first.focus();
-            }
-        };
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [busy, confirmation, onCancel]);
-
-    if (!confirmation) {
-        return null;
-    }
-
-    return (
-        <div className="dialog-backdrop" role="presentation">
-            <div
-                ref={dialog}
-                className="confirm-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="confirm-dialog-title"
-                aria-describedby="confirm-dialog-description"
-            >
-                <p className="section-kicker">Please confirm</p>
-                <h2 id="confirm-dialog-title">{confirmation.title}</h2>
-                <p id="confirm-dialog-description">{confirmation.description}</p>
-                <div className="request-actions">
-                    <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={onCancel}
-                        disabled={busy}
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        ref={confirmButton}
-                        className={`button ${confirmation.danger ? 'button-danger' : 'button-primary'}`}
-                        type="button"
-                        onClick={onConfirm}
-                        disabled={busy}
-                    >
-                        {busy ? 'Working…' : confirmation.confirmLabel}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
+function deviceStatus(device: AuthenticatedDevice): string {
+    return device.status === 'active'
+        ? 'Active'
+        : device.status === 'revoked'
+          ? 'Revoked'
+          : 'Logged out';
 }
 
-function OtpAccess({
-    view,
-    email,
-    otp,
-    label,
-    busy,
-    accountId,
-    onEmailChange,
-    onOtpChange,
-    onLabelChange,
-    onAccountIdChange,
-    onStartOtp,
-    onResendOtp,
-    onVerifyOtp,
-    onStartDeviceLogin,
-}: {
-    view: AccountView;
-    email: string;
-    otp: string;
-    label: string;
-    busy: boolean;
-    accountId: string;
-    onEmailChange: (value: string) => void;
-    onOtpChange: (value: string) => void;
-    onLabelChange: (value: string) => void;
-    onAccountIdChange: (value: string) => void;
-    onStartOtp: (event: FormEvent<HTMLFormElement>) => void;
-    onResendOtp: () => void;
-    onVerifyOtp: (event: FormEvent<HTMLFormElement>) => void;
-    onStartDeviceLogin: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-    if (view === 'otp-sent') {
-        return (
-            <section className="account-panel" aria-labelledby="otp-title">
-                <div className="panel-heading">
-                    <p className="section-kicker">Account access · code sent</p>
-                    <h2 id="otp-title">Enter the code from your email</h2>
-                    <p>
-                        If the address can receive messages, a one-time code is on its way. The code
-                        expires soon and is never stored in this browser.
-                    </p>
-                </div>
-                <form className="account-form" onSubmit={onVerifyOtp}>
-                    <label htmlFor="account-otp">
-                        One-time code
-                        <input
-                            id="account-otp"
-                            name="otp"
-                            type="text"
-                            inputMode="numeric"
-                            autoComplete="one-time-code"
-                            value={otp}
-                            onChange={(event) => onOtpChange(event.target.value)}
-                            required
-                            maxLength={64}
-                            disabled={busy}
-                        />
-                    </label>
-                    <button className="button button-primary" type="submit" disabled={busy}>
-                        {busy ? 'Checking code…' : 'Verify code'}
-                    </button>
-                </form>
-                <p className="account-help">
-                    Code not received?{' '}
-                    <button type="button" onClick={onResendOtp} disabled={busy}>
-                        Send another code
-                    </button>
-                </p>
-            </section>
-        );
-    }
-
-    return (
-        <section className="account-panel" aria-labelledby="account-access-title">
-            <div className="panel-heading">
-                <p className="section-kicker">Account access</p>
-                <h2 id="account-access-title">Create or recover your account</h2>
-                <p>
-                    Verify your email, then register this browser with a local device key. The
-                    private key stays in this browser profile.
-                </p>
-            </div>
-            <form className="account-form" onSubmit={onStartOtp}>
-                <label htmlFor="account-email">
-                    Account email
-                    <input
-                        id="account-email"
-                        name="email"
-                        type="email"
-                        autoComplete="email"
-                        value={email}
-                        onChange={(event) => onEmailChange(event.target.value)}
-                        placeholder="you@example.com"
-                        required
-                        maxLength={320}
-                        disabled={busy}
-                    />
-                </label>
-                <label htmlFor="account-device-label">
-                    Browser label
-                    <input
-                        id="account-device-label"
-                        name="label"
-                        type="text"
-                        value={label}
-                        onChange={(event) => onLabelChange(event.target.value)}
-                        placeholder="This browser"
-                        required
-                        maxLength={100}
-                        disabled={busy}
-                    />
-                </label>
-                <button className="button button-primary" type="submit" disabled={busy}>
-                    {busy ? 'Sending code…' : 'Email me a sign-in code'}
-                </button>
-            </form>
-            <details className="device-login">
-                <summary>Use a trusted browser key</summary>
-                <p>
-                    If this browser was already registered, sign in by proving possession of its
-                    local key. You will need your account ID from a previous signed-in session.
-                </p>
-                <form className="account-form" onSubmit={onStartDeviceLogin}>
-                    <label htmlFor="account-id">
-                        Account ID
-                        <input
-                            id="account-id"
-                            name="account-id"
-                            type="text"
-                            inputMode="text"
-                            autoComplete="off"
-                            value={accountId}
-                            onChange={(event) => onAccountIdChange(event.target.value)}
-                            placeholder="xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
-                            pattern={ACCOUNT_ID_PATTERN.source}
-                            required
-                            disabled={busy}
-                        />
-                    </label>
-                    <button className="button button-secondary" type="submit" disabled={busy}>
-                        Use this device key
-                    </button>
-                </form>
-            </details>
-        </section>
-    );
+function sortedDevices(devices: AuthenticatedDevice[]): AuthenticatedDevice[] {
+    return [...devices].sort((left, right) => {
+        const activeDifference =
+            Number(right.status === 'active') - Number(left.status === 'active');
+        return activeDifference || right.last_seen_at.localeCompare(left.last_seen_at);
+    });
 }
 
-function EnrollmentReview({
+function ChallengeReview({
     challenge,
-    identity,
     label,
-    recovery,
     busy,
     onConfirm,
 }: {
     challenge: RegistrationChallenge;
-    identity: DeviceIdentity;
     label: string;
-    recovery: boolean;
     busy: boolean;
     onConfirm: () => void;
 }) {
+    const linked = challenge.enrollment_method === 'device_link';
     return (
-        <section className="account-panel" aria-labelledby="enrollment-title">
+        <section className="account-panel" aria-labelledby="challenge-title">
             <div className="panel-heading">
-                <p className="section-kicker">{recovery ? 'Recovery' : 'New device'}</p>
-                <h2 id="enrollment-title">Review this browser before trusting it</h2>
+                <p className="section-kicker">{linked ? 'Device linking' : 'Email verified'}</p>
+                <h2 id="challenge-title">Confirm this browser key</h2>
                 <p>
-                    Check the device fingerprint before the browser receives an authenticated
-                    session. This proof is bound to this browser&apos;s non-exportable private key.
+                    The browser has generated a non-exportable signing key. Confirm its details to
+                    {linked ? ' link it to the active account.' : ' register it on this account.'}
                 </p>
             </div>
-            <dl className="request-details">
+            <dl className="account-id-card">
                 <div>
                     <dt>Browser label</dt>
                     <dd>{label}</dd>
                 </div>
                 <div>
-                    <dt>Device fingerprint</dt>
+                    <dt>Key fingerprint</dt>
                     <dd>
-                        <code title={identity.fingerprint}>
-                            {formatFingerprint(identity.fingerprint)}
-                        </code>
+                        <code>{formatFingerprint(challenge.fingerprint)}</code>
                     </dd>
                 </div>
                 <div>
                     <dt>Challenge</dt>
-                    <dd>{formatExpiry(challenge.expires_at)}</dd>
+                    <dd>{`Expires ${formatDate(challenge.expires_at)}`}</dd>
                 </div>
             </dl>
-            {recovery && (
-                <p className="inline-message inline-message-warning" role="alert">
-                    Recovery revokes every existing device and session. Those browsers will need to
-                    pair again.
-                </p>
-            )}
-            <button
-                className="button button-primary"
-                type="button"
-                onClick={onConfirm}
-                disabled={busy}
-            >
-                {busy ? 'Trusting browser…' : 'Trust this browser'}
-            </button>
-        </section>
-    );
-}
-
-function DeviceCard({
-    device,
-    current,
-    draftLabel,
-    busy,
-    onDraftChange,
-    onRename,
-    onRevoke,
-}: {
-    device: AuthenticatedDevice;
-    current: boolean;
-    draftLabel: string;
-    busy: boolean;
-    onDraftChange: (value: string) => void;
-    onRename: (event: FormEvent<HTMLFormElement>) => void;
-    onRevoke: () => void;
-}) {
-    return (
-        <article className="device-card">
-            <div className="trusted-request-heading">
-                <div>
-                    <span className="request-label">
-                        {current ? 'This browser' : 'Trusted browser'}
-                    </span>
-                    <h3>{device.label}</h3>
-                </div>
-                <span className={`request-state request-state-${device.status}`}>
-                    <span className="status-dot" aria-hidden="true" />
-                    {device.status === 'active' ? 'Active' : device.status}
-                </span>
-            </div>
-            <dl className="request-details request-details-compact">
-                <div>
-                    <dt>Fingerprint</dt>
-                    <dd>
-                        <code title={device.fingerprint}>
-                            {formatFingerprint(device.fingerprint)}
-                        </code>
-                    </dd>
-                </div>
-                <div>
-                    <dt>Added</dt>
-                    <dd>{formatDate(device.created_at)}</dd>
-                </div>
-                <div>
-                    <dt>Last seen</dt>
-                    <dd>{formatDate(device.last_seen_at)}</dd>
-                </div>
-            </dl>
-            {device.status === 'active' && (
-                <>
-                    <form className="device-rename-form" onSubmit={onRename}>
-                        <label htmlFor={`rename-${device.device_id}`}>
-                            Browser label
-                            <input
-                                id={`rename-${device.device_id}`}
-                                type="text"
-                                value={draftLabel}
-                                onChange={(event) => onDraftChange(event.target.value)}
-                                maxLength={100}
-                                required
-                                disabled={busy}
-                            />
-                        </label>
-                        <button
-                            className="button button-secondary button-small"
-                            type="submit"
-                            disabled={busy}
-                            aria-label={`Save label for ${device.label}`}
-                        >
-                            {busy ? 'Saving…' : 'Save label'}
-                        </button>
-                    </form>
-                    <button
-                        className="button button-danger"
-                        type="button"
-                        onClick={onRevoke}
-                        disabled={busy}
-                        aria-label={`Revoke ${current ? 'this browser' : `${device.label} browser`}`}
-                    >
-                        Revoke browser
-                    </button>
-                </>
-            )}
-        </article>
-    );
-}
-
-function AccountDashboard({
-    session,
-    devices,
-    sessions,
-    drafts,
-    busyDeviceId,
-    busy,
-    onRefresh,
-    onDraftChange,
-    onRename,
-    onRevoke,
-    onLogout,
-}: {
-    session: CurrentSession;
-    devices: AuthenticatedDevice[];
-    sessions: AuthenticatedSession[];
-    drafts: Record<string, string>;
-    busyDeviceId: string | null;
-    busy: boolean;
-    onRefresh: () => void;
-    onDraftChange: (deviceId: string, value: string) => void;
-    onRename: (device: AuthenticatedDevice, event: FormEvent<HTMLFormElement>) => void;
-    onRevoke: (device: AuthenticatedDevice) => void;
-    onLogout: () => void;
-}) {
-    return (
-        <section className="account-panel" aria-labelledby="account-title">
-            <div className="panel-heading panel-heading-row">
-                <div>
-                    <p className="section-kicker">Account · trusted devices</p>
-                    <h2 id="account-title">Your secure circle</h2>
-                    <p>Manage the browsers that can approve pairings and transfer files.</p>
-                </div>
-                <div className="request-actions account-actions">
-                    <button
-                        className="button button-small"
-                        type="button"
-                        onClick={onRefresh}
-                        disabled={busy}
-                        aria-label="Refresh account details"
-                    >
-                        Refresh
-                    </button>
-                    <button
-                        className="button button-secondary button-small"
-                        type="button"
-                        onClick={onLogout}
-                        disabled={busy}
-                        aria-label="Sign out of this browser"
-                    >
-                        Sign out
-                    </button>
-                </div>
-            </div>
-            <div className="account-id-card">
-                <span className="request-label">Account ID</span>
-                <code>{session.account_id}</code>
-                <p>Keep this ID available if you want to sign in later with this browser key.</p>
-            </div>
-            <div className="account-section">
-                <div className="transfer-group-heading">
-                    <h3>Browsers</h3>
-                    <span className="request-expiry">{devices.length} registered</span>
-                </div>
-                {devices.length === 0 ? (
-                    <div className="empty-state">
-                        <strong>No browsers registered</strong>
-                        <p>
-                            Register a browser with email recovery or pair one from another trusted
-                            browser.
-                        </p>
-                    </div>
-                ) : (
-                    <div className="device-list">
-                        {devices.map((device) => (
-                            <DeviceCard
-                                key={device.device_id}
-                                device={device}
-                                current={device.device_id === session.device_id}
-                                draftLabel={drafts[device.device_id] ?? device.label}
-                                busy={busyDeviceId === device.device_id}
-                                onDraftChange={(value) => onDraftChange(device.device_id, value)}
-                                onRename={(event) => onRename(device, event)}
-                                onRevoke={() => onRevoke(device)}
-                            />
-                        ))}
-                    </div>
-                )}
-            </div>
-            <div className="account-section">
-                <div className="transfer-group-heading">
-                    <h3>Sessions</h3>
-                    <span className="request-expiry">{sessions.length} recorded</span>
-                </div>
-                <div className="session-list">
-                    {sessions.map((item) => (
-                        <div className="session-row" key={item.session_id}>
-                            <div>
-                                <strong>
-                                    {item.device_id === session.device_id
-                                        ? 'This browser'
-                                        : 'Trusted browser'}
-                                </strong>
-                                <span>{formatDate(item.last_seen_at)}</span>
-                            </div>
-                            <span
-                                className={`request-state ${item.revoked_at ? 'request-state-revoked' : 'request-state-active'}`}
-                            >
-                                {item.revoked_at
-                                    ? `Ended ${formatDate(item.revoked_at)}`
-                                    : 'Active'}
-                            </span>
-                        </div>
-                    ))}
-                    {sessions.length === 0 && (
-                        <p className="empty-copy">No session history is available.</p>
-                    )}
-                </div>
+            <div className="request-actions">
+                <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={onConfirm}
+                    disabled={busy}
+                >
+                    {busy ? 'Confirming…' : linked ? 'Link this browser' : 'Register this browser'}
+                </button>
             </div>
         </section>
     );
@@ -627,48 +150,42 @@ function AccountConsole() {
     const [view, setView] = useState<AccountView>('checking');
     const [session, setSession] = useState<CurrentSession | null>(null);
     const [devices, setDevices] = useState<AuthenticatedDevice[]>([]);
-    const [sessions, setSessions] = useState<AuthenticatedSession[]>([]);
-    const [drafts, setDrafts] = useState<Record<string, string>>({});
-    const [busyDeviceId, setBusyDeviceId] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false);
     const [email, setEmail] = useState('');
     const [otp, setOtp] = useState('');
-    const [label, setLabel] = useState('This browser');
+    const [linkingCode, setLinkingCode] = useState('');
     const [accountId, setAccountId] = useState('');
+    const [label, setLabel] = useState(() => getDefaultDeviceLabel());
     const [bootstrap, setBootstrap] = useState<OtpBootstrap | null>(null);
-    const [identity, setIdentity] = useState<DeviceIdentity | null>(null);
     const [challenge, setChallenge] = useState<RegistrationChallenge | null>(null);
     const [loginChallenge, setLoginChallenge] = useState<DeviceLoginChallenge | null>(null);
-    const [recovery, setRecovery] = useState(false);
-    const [needsRecovery, setNeedsRecovery] = useState(false);
+    const [identity, setIdentity] = useState<DeviceIdentity | null>(null);
+    const [linkingOtp, setLinkingOtp] = useState<DeviceLinkingOtp | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [busyDeviceId, setBusyDeviceId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
-    const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-    const [confirmationBusy, setConfirmationBusy] = useState(false);
 
     const refresh = useCallback(async () => {
         try {
             const current = await getCurrentSession();
-            const [nextDevices, nextSessions] = await Promise.all([listDevices(), listSessions()]);
+            const nextDevices = await listDevices();
             setSession(current);
             setDevices(nextDevices);
-            setSessions(nextSessions);
-            setDrafts(
-                Object.fromEntries(nextDevices.map((device) => [device.device_id, device.label])),
-            );
-            setView('authenticated');
             setError(null);
+            setView('authenticated');
         } catch (refreshError) {
-            if (refreshError instanceof ApiError && refreshError.status === 401) {
+            if (
+                refreshError instanceof ApiError &&
+                (refreshError.status === 401 || refreshError.status === 403)
+            ) {
                 clearApiSession();
                 setSession(null);
                 setDevices([]);
-                setSessions([]);
                 setView('signed-out');
                 return;
             }
+            setError(errorMessage(refreshError, 'Account details are unavailable.'));
             setView('error');
-            setError(errorMessage(refreshError, 'Account details could not be loaded.'));
         }
     }, []);
 
@@ -676,392 +193,341 @@ function AccountConsole() {
         void refresh();
     }, [refresh]);
 
-    const openConfirmation = useCallback((nextConfirmation: Confirmation) => {
-        setConfirmation(nextConfirmation);
-    }, []);
+    const run = async (action: () => Promise<void>, fallback: string) => {
+        setBusy(true);
+        setError(null);
+        try {
+            await action();
+        } catch (actionError) {
+            setError(errorMessage(actionError, fallback));
+        } finally {
+            setBusy(false);
+        }
+    };
 
-    const confirmAction = async () => {
-        if (!confirmation) {
+    const handleStartOtp = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const nextEmail = email.trim().toLowerCase();
+        if (!nextEmail) {
+            setError('Enter an email address.');
             return;
         }
-        setConfirmationBusy(true);
-        try {
-            await confirmation.action();
-            setConfirmation(null);
-        } finally {
-            setConfirmationBusy(false);
-        }
-    };
-
-    const handleStartOtp = async (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        setBusy(true);
-        setError(null);
-        setNotice(null);
-        try {
-            await startOtp(email.trim());
-            setView('otp-sent');
+        void run(async () => {
+            await startOtp(nextEmail);
+            setEmail(nextEmail);
             setOtp('');
-            setNotice('If the address can receive messages, a one-time code has been sent.');
-        } catch (startError) {
-            setError(errorMessage(startError, 'The sign-in code could not be sent.'));
-        } finally {
-            setBusy(false);
-        }
+            setNotice('A one-time code was sent if the address is registered.');
+            setView('otp-sent');
+        }, 'The email code could not be requested.');
     };
 
-    const handleResendOtp = async () => {
-        setBusy(true);
-        setError(null);
-        setNotice(null);
-        try {
-            await startOtp(email.trim());
-            setNotice('If the address can receive messages, a one-time code has been sent.');
-        } catch (resendError) {
-            setError(errorMessage(resendError, 'The sign-in code could not be sent.'));
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    const handleVerifyOtp = async (event: FormEvent<HTMLFormElement>) => {
+    const handleVerifyOtp = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        setBusy(true);
-        setError(null);
-        setNotice(null);
-        try {
-            const verified = await verifyOtp(email.trim(), otp.trim());
+        void run(async () => {
+            const verified = await verifyOtp(email.trim().toLowerCase(), otp.trim());
             setBootstrap(verified);
-            setNeedsRecovery(false);
+            setNotice(null);
             setView('verified');
-        } catch (verifyError) {
-            setError(errorMessage(verifyError, 'The email or one-time code is invalid.'));
-        } finally {
-            setBusy(false);
-        }
+        }, 'The email or one-time code is invalid.');
     };
 
-    const prepareRegistration = async (isRecovery: boolean) => {
+    const handleEmailRegistration = () => {
         if (!bootstrap) {
             return;
         }
-        setBusy(true);
-        setError(null);
-        setNotice(null);
-        try {
+        void run(async () => {
             const nextIdentity = await getOrCreateDeviceIdentity();
             const nextChallenge = await issueRegistrationChallenge(
                 bootstrap.bootstrap_token,
                 nextIdentity,
-                label.trim(),
-                isRecovery,
+                label,
             );
             setIdentity(nextIdentity);
-            setRecovery(nextChallenge.recovery);
             setChallenge(nextChallenge);
-            setNeedsRecovery(false);
             setView('challenge');
-        } catch (registrationError) {
-            if (
-                registrationError instanceof ApiError &&
-                registrationError.status === 409 &&
-                !isRecovery
-            ) {
-                setNeedsRecovery(true);
-                setNotice(
-                    'This account already has a trusted browser. Pair this browser from that device, or recover by email.',
-                );
-            } else {
-                setError(
-                    errorMessage(
-                        registrationError,
-                        'The browser enrollment request could not be created.',
-                    ),
-                );
-            }
-        } finally {
-            setBusy(false);
-        }
+        }, 'This browser could not prepare its signing key.');
     };
 
-    const requestEnrollment = () => {
-        openConfirmation({
-            title: 'Trust this browser?',
-            description:
-                'This browser will become a trusted device and receive an authenticated session after its key proof succeeds.',
-            confirmLabel: 'Review enrollment',
-            action: async () => prepareRegistration(false),
-        });
-    };
-
-    const requestRecovery = () => {
-        openConfirmation({
-            title: 'Start account recovery?',
-            description:
-                'Recovery revokes every existing session and device. Other browsers will need to pair again after this browser is trusted.',
-            confirmLabel: 'Start recovery',
-            danger: true,
-            action: async () => prepareRegistration(true),
-        });
-    };
-
-    const completeEnrollmentAfterConfirmation = () => {
-        if (!challenge || !identity) {
-            return;
-        }
-        openConfirmation({
-            title: recovery ? 'Finish account recovery?' : 'Finish browser enrollment?',
-            description: recovery
-                ? 'This final step will invalidate every other browser and session for this account.'
-                : 'This final step will activate this browser as a trusted device.',
-            confirmLabel: recovery ? 'Finish recovery' : 'Trust browser',
-            danger: recovery,
-            action: async () => {
-                setBusy(true);
-                setError(null);
-                try {
-                    const result = await completeRegistration(challenge, identity);
-                    setNotice(result.warning ?? 'This browser is now trusted.');
-                    setBootstrap(null);
-                    setChallenge(null);
-                    setIdentity(null);
-                    await refresh();
-                } catch (completionError) {
-                    setError(errorMessage(completionError, 'The browser could not be trusted.'));
-                } finally {
-                    setBusy(false);
-                }
-            },
-        });
-    };
-
-    const handleStartDeviceLogin = async (event: FormEvent<HTMLFormElement>) => {
+    const handleStartLinking = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        if (!ACCOUNT_ID_PATTERN.test(accountId.trim())) {
-            setError('Enter the account ID from a previous signed-in session.');
+        void run(async () => {
+            const nextIdentity = await getOrCreateDeviceIdentity();
+            const nextChallenge = await issueDeviceLinkingChallenge(
+                linkingCode.trim(),
+                nextIdentity,
+                label,
+            );
+            setIdentity(nextIdentity);
+            setChallenge(nextChallenge);
+            setView('challenge');
+        }, 'The device-linking code is invalid or expired.');
+    };
+
+    const handleStartLogin = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const nextAccountId = accountId.trim();
+        if (!ACCOUNT_ID_PATTERN.test(nextAccountId)) {
+            setError('Enter the account ID shown on a signed-in device.');
             return;
         }
-        setBusy(true);
-        setError(null);
-        setNotice(null);
-        try {
+        void run(async () => {
             const nextIdentity = await loadDeviceIdentity();
             if (!nextIdentity) {
                 throw new DeviceKeyMissingError('This browser does not have a trusted device key.');
             }
-            const nextChallenge = await issueDeviceLoginChallenge(accountId.trim(), nextIdentity);
+            const nextChallenge = await issueDeviceLoginChallenge(nextAccountId, nextIdentity);
             setIdentity(nextIdentity);
             setLoginChallenge(nextChallenge);
             setView('login-challenge');
-        } catch (loginError) {
-            setError(errorMessage(loginError, 'This browser key could not start a sign-in.'));
-        } finally {
-            setBusy(false);
-        }
+        }, 'This browser key could not start a sign-in.');
     };
 
-    const completeDeviceLoginFlow = async () => {
+    const completeChallenge = () => {
+        if (!challenge || !identity) {
+            return;
+        }
+        void run(async () => {
+            const result =
+                challenge.enrollment_method === 'device_link'
+                    ? await completeDeviceLink(challenge, identity)
+                    : await completeRegistration(challenge, identity);
+            setNotice(
+                result.fallback
+                    ? 'Email fallback signed in this browser. Other devices were unchanged.'
+                    : 'This browser is now trusted.',
+            );
+            setBootstrap(null);
+            setChallenge(null);
+            setIdentity(null);
+            await refresh();
+        }, 'The browser key proof could not be completed.');
+    };
+
+    const completeLogin = () => {
         if (!loginChallenge || !identity) {
             return;
         }
-        setBusy(true);
-        setError(null);
-        try {
+        void run(async () => {
             const result = await completeDeviceLogin(loginChallenge, identity);
-            setNotice(result.warning ?? 'Signed in with this browser key.');
+            setNotice(
+                result.fallback
+                    ? 'Email fallback signed in this browser.'
+                    : 'Signed in with this browser key.',
+            );
             setLoginChallenge(null);
             setIdentity(null);
             await refresh();
-        } catch (loginError) {
-            setError(errorMessage(loginError, 'This browser key could not sign you in.'));
-        } finally {
-            setBusy(false);
-        }
+        }, 'This browser key could not sign you in.');
     };
 
-    const handleRename = async (device: AuthenticatedDevice, event: FormEvent<HTMLFormElement>) => {
+    const createLinkingCode = () => {
+        void run(async () => {
+            setLinkingOtp(await issueDeviceLinkingOtp());
+            setNotice('Enter this one-time code on the browser you want to link.');
+        }, 'A device-linking code could not be created.');
+    };
+
+    const handleRename = (device: AuthenticatedDevice, event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        const nextLabel = drafts[device.device_id]?.trim() ?? '';
+        const input = new FormData(event.currentTarget).get('label');
+        const nextLabel = typeof input === 'string' ? input.trim() : '';
         if (!nextLabel) {
             setError('Enter a browser label.');
             return;
         }
-        setBusyDeviceId(device.device_id);
-        setError(null);
-        setNotice(null);
-        try {
+        void run(async () => {
             const updated = await renameDevice(device.device_id, nextLabel);
             setDevices((current) =>
                 current.map((item) => (item.device_id === updated.device_id ? updated : item)),
             );
-            setDrafts((current) => ({ ...current, [updated.device_id]: updated.label }));
             setNotice('Browser label saved.');
-        } catch (renameError) {
-            setError(errorMessage(renameError, 'The browser label could not be saved.'));
-        } finally {
-            setBusyDeviceId(null);
+        }, 'The browser label could not be saved.');
+    };
+
+    const handleLogoutDevice = (device: AuthenticatedDevice) => {
+        if (!window.confirm(`Log out ${device.label}?`)) {
+            return;
         }
-    };
-
-    const handleRevoke = (device: AuthenticatedDevice) => {
-        const isCurrent = device.device_id === session?.device_id;
-        openConfirmation({
-            title: isCurrent ? 'Revoke this browser?' : `Revoke ${device.label}?`,
-            description: isCurrent
-                ? 'This browser will be signed out immediately and its device key will no longer authenticate.'
-                : 'This ends its sessions, closes its connections, and prevents it from approving or transferring files.',
-            confirmLabel: 'Revoke browser',
-            danger: true,
-            action: async () => {
-                setBusyDeviceId(device.device_id);
-                setError(null);
-                try {
-                    await revokeDevice(device.device_id);
-                    if (isCurrent) {
-                        clearApiSession();
-                        setSession(null);
-                        setDevices([]);
-                        setSessions([]);
-                        setView('signed-out');
-                        setNotice(
-                            'This browser was revoked. Recover or pair it again to continue.',
-                        );
-                    } else {
-                        setDevices((current) =>
-                            current.filter((item) => item.device_id !== device.device_id),
-                        );
-                        setSessions((current) =>
-                            current.filter((item) => item.device_id !== device.device_id),
-                        );
-                        setNotice('Browser revoked.');
-                    }
-                } catch (revokeError) {
-                    setError(errorMessage(revokeError, 'The browser could not be revoked.'));
-                } finally {
-                    setBusyDeviceId(null);
-                }
-            },
-        });
-    };
-
-    const handleLogout = async () => {
-        setBusy(true);
+        setBusyDeviceId(device.device_id);
         setError(null);
-        try {
-            await logout();
-            clearApiSession();
-            setSession(null);
-            setDevices([]);
-            setSessions([]);
-            setView('signed-out');
-            setNotice('Signed out of this browser.');
-        } catch (logoutError) {
-            setError(errorMessage(logoutError, 'This browser could not sign out.'));
-        } finally {
-            setBusy(false);
-        }
+        void logoutDevice(device.device_id)
+            .then((updated) => {
+                if (device.device_id === session?.device_id) {
+                    clearApiSession();
+                    setSession(null);
+                    setDevices([]);
+                    setView('signed-out');
+                    setNotice(
+                        'This browser is logged out. Choose email fallback or sign in with its key.',
+                    );
+                } else {
+                    setDevices((current) =>
+                        current.map((item) =>
+                            item.device_id === updated.device_id ? updated : item,
+                        ),
+                    );
+                    setNotice(`${device.label} is logged out.`);
+                }
+            })
+            .catch((logoutError: unknown) => {
+                setError(errorMessage(logoutError, 'The browser could not be logged out.'));
+            })
+            .finally(() => setBusyDeviceId(null));
     };
 
-    const content =
-        view === 'authenticated' && session ? (
-            <AccountDashboard
-                session={session}
-                devices={devices}
-                sessions={sessions}
-                drafts={drafts}
-                busyDeviceId={busyDeviceId}
-                busy={busy}
-                onRefresh={() => void refresh()}
-                onDraftChange={(deviceId, value) =>
-                    setDrafts((current) => ({ ...current, [deviceId]: value }))
-                }
-                onRename={(device, event) => void handleRename(device, event)}
-                onRevoke={handleRevoke}
-                onLogout={() => void handleLogout()}
-            />
-        ) : view === 'otp-sent' || view === 'signed-out' || view === 'error' ? (
-            <OtpAccess
-                view={view}
-                email={email}
-                otp={otp}
-                label={label}
-                busy={busy}
-                accountId={accountId}
-                onEmailChange={setEmail}
-                onOtpChange={setOtp}
-                onLabelChange={setLabel}
-                onAccountIdChange={setAccountId}
-                onStartOtp={(event) => void handleStartOtp(event)}
-                onResendOtp={() => void handleResendOtp()}
-                onVerifyOtp={(event) => void handleVerifyOtp(event)}
-                onStartDeviceLogin={(event) => void handleStartDeviceLogin(event)}
-            />
+    const accessPanel =
+        view === 'email' ? (
+            <section className="account-panel" aria-labelledby="email-title">
+                <div className="panel-heading">
+                    <p className="section-kicker">Email fallback</p>
+                    <h2 id="email-title">Use email instead?</h2>
+                    <p>Verify the account email to sign in or add only this browser.</p>
+                </div>
+                <form className="account-form" onSubmit={handleStartOtp}>
+                    <label htmlFor="account-email">
+                        Email address
+                        <input
+                            id="account-email"
+                            type="email"
+                            value={email}
+                            onChange={(event) => setEmail(event.target.value)}
+                            autoComplete="email"
+                            required
+                            disabled={busy}
+                        />
+                    </label>
+                    <button className="button button-primary" type="submit" disabled={busy}>
+                        {busy ? 'Sending…' : 'Send email code'}
+                    </button>
+                </form>
+                <p className="account-help">
+                    <button type="button" onClick={() => setView('signed-out')} disabled={busy}>
+                        Use a saved browser key instead
+                    </button>
+                </p>
+            </section>
+        ) : view === 'otp-sent' ? (
+            <section className="account-panel" aria-labelledby="otp-title">
+                <div className="panel-heading">
+                    <p className="section-kicker">Email code sent</p>
+                    <h2 id="otp-title">Enter the code from your email</h2>
+                    <p>{email}</p>
+                </div>
+                <form className="account-form" onSubmit={handleVerifyOtp}>
+                    <label htmlFor="account-otp">
+                        One-time code
+                        <input
+                            id="account-otp"
+                            type="text"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            value={otp}
+                            onChange={(event) => setOtp(event.target.value)}
+                            required
+                            disabled={busy}
+                        />
+                    </label>
+                    <button className="button button-primary" type="submit" disabled={busy}>
+                        {busy ? 'Checking…' : 'Verify email'}
+                    </button>
+                </form>
+                <p className="account-help">
+                    <button type="button" onClick={() => setView('email')} disabled={busy}>
+                        Use a different email
+                    </button>
+                </p>
+            </section>
         ) : view === 'verified' ? (
             <section className="account-panel" aria-labelledby="verified-title">
                 <div className="panel-heading">
                     <p className="section-kicker">Email verified</p>
                     <h2 id="verified-title">Register this browser</h2>
                     <p>
-                        Your email is verified. The browser will generate a non-exportable key and
-                        show its fingerprint before activation.
+                        Your email proof is complete. Choose a recognizable label for this browser.
                     </p>
                 </div>
-                <label htmlFor="verified-device-label">
-                    Browser label
-                    <input
-                        id="verified-device-label"
-                        type="text"
-                        value={label}
-                        onChange={(event) => setLabel(event.target.value)}
-                        maxLength={100}
-                        required
-                        disabled={busy}
-                    />
-                </label>
-                <div className="request-actions">
-                    <button
-                        className="button button-primary"
-                        type="button"
-                        onClick={requestEnrollment}
-                        disabled={busy}
-                    >
-                        Review browser enrollment
-                    </button>
-                    {needsRecovery && (
-                        <button
-                            className="button button-danger"
-                            type="button"
-                            onClick={requestRecovery}
+                <form
+                    className="account-form"
+                    onSubmit={(event) => {
+                        event.preventDefault();
+                        handleEmailRegistration();
+                    }}
+                >
+                    <label htmlFor="verified-device-label">
+                        Browser label
+                        <input
+                            id="verified-device-label"
+                            type="text"
+                            value={label}
+                            onChange={(event) => setLabel(event.target.value)}
+                            maxLength={100}
+                            required
                             disabled={busy}
-                        >
-                            Recover account by email
-                        </button>
-                    )}
-                </div>
-                {needsRecovery && (
-                    <p className="inline-message inline-message-warning" role="status">
-                        Another trusted browser already exists. Pairing is safer when one is
-                        available; recovery will invalidate the existing device set.
-                    </p>
-                )}
+                        />
+                    </label>
+                    <button className="button button-primary" type="submit" disabled={busy}>
+                        {busy ? 'Preparing…' : 'Review browser key'}
+                    </button>
+                </form>
             </section>
-        ) : view === 'challenge' && challenge && identity ? (
-            <EnrollmentReview
+        ) : view === 'linking' ? (
+            <section className="account-panel" aria-labelledby="linking-title">
+                <div className="panel-heading">
+                    <p className="section-kicker">Device linking</p>
+                    <h2 id="linking-title">Enter the one-time code</h2>
+                    <p>
+                        Create this code on an active device. It expires after one use or ten
+                        minutes.
+                    </p>
+                </div>
+                <form className="account-form" onSubmit={handleStartLinking}>
+                    <label htmlFor="linking-code">
+                        Device-linking code
+                        <input
+                            id="linking-code"
+                            type="text"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            value={linkingCode}
+                            onChange={(event) => setLinkingCode(event.target.value)}
+                            minLength={6}
+                            maxLength={6}
+                            required
+                            disabled={busy}
+                        />
+                    </label>
+                    <label htmlFor="linking-device-label">
+                        Browser label
+                        <input
+                            id="linking-device-label"
+                            type="text"
+                            value={label}
+                            onChange={(event) => setLabel(event.target.value)}
+                            maxLength={100}
+                            required
+                            disabled={busy}
+                        />
+                    </label>
+                    <button className="button button-primary" type="submit" disabled={busy}>
+                        {busy ? 'Checking…' : 'Continue with linking code'}
+                    </button>
+                </form>
+            </section>
+        ) : view === 'challenge' && challenge ? (
+            <ChallengeReview
                 challenge={challenge}
-                identity={identity}
                 label={label}
-                recovery={recovery}
                 busy={busy}
-                onConfirm={completeEnrollmentAfterConfirmation}
+                onConfirm={completeChallenge}
             />
         ) : view === 'login-challenge' && loginChallenge ? (
-            <section className="account-panel" aria-labelledby="device-login-title">
+            <section className="account-panel" aria-labelledby="login-challenge-title">
                 <div className="panel-heading">
-                    <p className="section-kicker">Trusted browser key</p>
-                    <h2 id="device-login-title">Confirm this browser key</h2>
-                    <p>Sign the fresh challenge to resume the account session.</p>
+                    <p className="section-kicker">Saved browser key</p>
+                    <h2 id="login-challenge-title">Confirm this sign-in</h2>
+                    <p>Sign the fresh challenge with this browser's non-exportable key.</p>
                 </div>
-                <dl className="request-details">
+                <dl className="account-id-card">
                     <div>
                         <dt>Account ID</dt>
                         <dd>
@@ -1070,37 +536,229 @@ function AccountConsole() {
                     </div>
                     <div>
                         <dt>Challenge</dt>
-                        <dd>{formatExpiry(loginChallenge.expires_at)}</dd>
+                        <dd>{`Expires ${formatDate(loginChallenge.expires_at)}`}</dd>
                     </div>
                 </dl>
-                <button
-                    className="button button-primary"
-                    type="button"
-                    onClick={() => void completeDeviceLoginFlow()}
-                    disabled={busy}
-                >
-                    {busy ? 'Signing in…' : 'Sign in with this key'}
-                </button>
+                <div className="request-actions">
+                    <button
+                        className="button button-primary"
+                        type="button"
+                        onClick={completeLogin}
+                        disabled={busy}
+                    >
+                        {busy ? 'Signing in…' : 'Sign in with this key'}
+                    </button>
+                </div>
             </section>
-        ) : view === 'checking' ? (
+        ) : (
+            <section className="account-panel" aria-labelledby="access-title">
+                <div className="panel-heading">
+                    <p className="section-kicker">Account access</p>
+                    <h2 id="access-title">Sign in on this browser</h2>
+                    <p>
+                        Use a saved device key, link this browser from an active device, or use
+                        email fallback.
+                    </p>
+                </div>
+                <div className="request-actions">
+                    <button
+                        className="button button-primary"
+                        type="button"
+                        onClick={() => setView('email')}
+                        disabled={busy}
+                    >
+                        Use email instead?
+                    </button>
+                    <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={() => setView('linking')}
+                        disabled={busy}
+                    >
+                        I have a linking code
+                    </button>
+                </div>
+                <details className="device-login">
+                    <summary>Sign in with a saved browser key</summary>
+                    <form className="account-form" onSubmit={handleStartLogin}>
+                        <label htmlFor="login-account-id">
+                            Account ID
+                            <input
+                                id="login-account-id"
+                                type="text"
+                                value={accountId}
+                                onChange={(event) => setAccountId(event.target.value)}
+                                autoComplete="username"
+                                placeholder="Account ID from a trusted device"
+                                required
+                                disabled={busy}
+                            />
+                        </label>
+                        <button className="button button-secondary" type="submit" disabled={busy}>
+                            {busy ? 'Checking…' : 'Start key sign-in'}
+                        </button>
+                    </form>
+                </details>
+            </section>
+        );
+
+    if (view === 'checking') {
+        return (
             <section className="account-panel empty-panel" aria-labelledby="account-checking-title">
                 <p className="section-kicker">Account access</p>
                 <h2 id="account-checking-title">Checking this browser session…</h2>
                 <p className="empty-copy">Looking for an active trusted-device session.</p>
             </section>
-        ) : (
-            <section className="account-panel" aria-labelledby="account-error-title">
-                <p className="section-kicker">Account access</p>
-                <h2 id="account-error-title">Account details are unavailable</h2>
-                <button
-                    className="button button-secondary"
-                    type="button"
-                    onClick={() => void refresh()}
-                >
-                    Try again
-                </button>
-            </section>
         );
+    }
+
+    if (view === 'authenticated' && session) {
+        const orderedDevices = sortedDevices(devices);
+        return (
+            <>
+                {error && (
+                    <p
+                        className="inline-message inline-message-error account-global-message"
+                        role="alert"
+                    >
+                        {error}
+                    </p>
+                )}
+                {notice && (
+                    <p
+                        className="inline-message inline-message-success account-global-message"
+                        role="status"
+                    >
+                        {notice}
+                    </p>
+                )}
+                <section className="account-panel" aria-labelledby="account-title">
+                    <div className="panel-heading panel-heading-row">
+                        <div>
+                            <p className="section-kicker">Trusted devices</p>
+                            <h2 id="account-title">Manage your account devices</h2>
+                            <p>
+                                Active devices can link another browser. Logged-out devices stay
+                                listed but cannot authenticate.
+                            </p>
+                        </div>
+                        <button
+                            className="button button-secondary"
+                            type="button"
+                            onClick={() => void refresh()}
+                            disabled={busy}
+                        >
+                            Refresh
+                        </button>
+                    </div>
+                    <div className="account-id-card">
+                        <strong>Account ID</strong>
+                        <code>{session.account_id}</code>
+                        <p>Share this ID only when signing in with a saved browser key.</p>
+                    </div>
+                    <div className="request-actions">
+                        <button
+                            className="button button-primary"
+                            type="button"
+                            onClick={createLinkingCode}
+                            disabled={busy}
+                        >
+                            {busy ? 'Creating…' : 'Create one-time linking code'}
+                        </button>
+                    </div>
+                    {linkingOtp && (
+                        <p className="inline-message inline-message-success" role="status">
+                            <strong>{linkingOtp.otp}</strong> · expires{' '}
+                            {formatDate(linkingOtp.expires_at)} · one use only
+                        </p>
+                    )}
+                    <div className="account-section" aria-labelledby="device-list-title">
+                        <div className="transfer-group-heading">
+                            <div>
+                                <p className="request-label">Device list</p>
+                                <h3 id="device-list-title">Active first, logged-out below</h3>
+                            </div>
+                            <span className="request-expiry">{orderedDevices.length} devices</span>
+                        </div>
+                        <div className="device-list">
+                            {orderedDevices.map((device) => {
+                                const current = device.device_id === session.device_id;
+                                const active = device.status === 'active';
+                                return (
+                                    <article
+                                        className={`device-card ${active ? '' : 'device-card-muted'}`}
+                                        key={device.device_id}
+                                    >
+                                        <div className="trusted-request-heading">
+                                            <div>
+                                                <p className="request-label">
+                                                    {current ? 'This device' : 'Trusted device'}
+                                                </p>
+                                                <h3>{device.label}</h3>
+                                            </div>
+                                            <span
+                                                className={`request-state request-state-${active ? 'active' : 'revoked'}`}
+                                            >
+                                                {deviceStatus(device)}
+                                            </span>
+                                        </div>
+                                        <p className="transfer-copy">
+                                            Last seen {formatDate(device.last_seen_at)} · key{' '}
+                                            <code>{formatFingerprint(device.fingerprint)}</code>
+                                        </p>
+                                        {active && (
+                                            <form
+                                                className="device-rename-form"
+                                                onSubmit={(event) => handleRename(device, event)}
+                                            >
+                                                <label htmlFor={`device-label-${device.device_id}`}>
+                                                    Browser label
+                                                    <input
+                                                        id={`device-label-${device.device_id}`}
+                                                        name="label"
+                                                        type="text"
+                                                        defaultValue={device.label}
+                                                        maxLength={100}
+                                                        disabled={
+                                                            busy ||
+                                                            busyDeviceId === device.device_id
+                                                        }
+                                                    />
+                                                </label>
+                                                <button
+                                                    className="button button-secondary"
+                                                    type="submit"
+                                                    disabled={
+                                                        busy || busyDeviceId === device.device_id
+                                                    }
+                                                >
+                                                    Save label
+                                                </button>
+                                            </form>
+                                        )}
+                                        {active && (
+                                            <button
+                                                className="button button-danger"
+                                                type="button"
+                                                onClick={() => handleLogoutDevice(device)}
+                                                disabled={busy || busyDeviceId === device.device_id}
+                                            >
+                                                {busyDeviceId === device.device_id
+                                                    ? 'Logging out…'
+                                                    : current
+                                                      ? 'Log out this device'
+                                                      : 'Log out remotely'}
+                                            </button>
+                                        )}
+                                    </article>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </section>
+            </>
+        );
+    }
 
     return (
         <>
@@ -1116,18 +774,11 @@ function AccountConsole() {
                 <p
                     className="inline-message inline-message-success account-global-message"
                     role="status"
-                    aria-live="polite"
                 >
                     {notice}
                 </p>
             )}
-            {content}
-            <ConfirmDialog
-                confirmation={confirmation}
-                busy={confirmationBusy}
-                onCancel={() => setConfirmation(null)}
-                onConfirm={() => void confirmAction()}
-            />
+            {accessPanel}
         </>
     );
 }

@@ -42,5 +42,5 @@ Until real browser runs are recorded, do not describe any target above as passed
 ### 2026-08-29 — Local Chrome sender / Codex in-app receiver transfer
 
 - Environment: localhost frontend with the fake backend; Chrome sender and Codex in-app browser receiver (exact browser build not recorded).
-- Passed: pairing was approved; `v1.json` (7.1 KB) transferred over a direct connection, reported securely verified at 100%; the explicit download confirmation was shown and accepted, and the app reported that the download started.
+- Historical result (before the 2026-08-30 user-flow revision): pairing was approved; `v1.json` (7.1 KB) transferred over a direct connection, reported securely verified at 100%; the explicit download confirmation was shown and accepted, and the app reported that the download started.
 - Not run: relay or restrictive-network transfer, cancellation/interruption scenarios, or other desktop browsers. The browser download event timed out, so bytewise filesystem verification is not claimed.

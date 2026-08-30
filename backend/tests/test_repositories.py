@@ -50,7 +50,7 @@ def _account_row() -> dict[str, object]:
         "email_normalized": "alice@example.test",
         "device_epoch": 0,
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
-        "recovered_at": None,
+        "email_fallback_at": None,
         "deleted_at": None,
     }
 
@@ -67,7 +67,7 @@ def _device_row(account_id: UUID) -> dict[str, object]:
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
         "last_seen_at": datetime(2026, 1, 2, tzinfo=UTC),
         "revoked_at": datetime(2026, 1, 3, tzinfo=UTC),
-        "approved_by_device_id": None,
+        "linked_by_device_id": None,
     }
 
 

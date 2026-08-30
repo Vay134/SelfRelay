@@ -549,6 +549,7 @@ class PresenceManager:
 
         if message_type == SIGNALING_OFFER_MESSAGE_TYPE:
             if connection.device_id != sender_device_id or transfer.status not in {
+                "offered",
                 "accepted",
                 "negotiating",
             }:
@@ -567,11 +568,16 @@ class PresenceManager:
             SIGNALING_ANSWER_MESSAGE_TYPE,
             SIGNALING_HANDSHAKE_ANSWER_MESSAGE_TYPE,
         }:
-            if connection.device_id != recipient_device_id or transfer.status != "negotiating":
+            if connection.device_id != recipient_device_id or transfer.status not in {
+                "offered",
+                "accepted",
+                "negotiating",
+            }:
                 self._metrics.increment("signaling_rejected")
                 return False
         elif message_type == SIGNALING_HANDSHAKE_OFFER_MESSAGE_TYPE:
             if connection.device_id != sender_device_id or transfer.status not in {
+                "offered",
                 "accepted",
                 "negotiating",
             }:
@@ -586,7 +592,7 @@ class PresenceManager:
                 if negotiating is None:
                     self._metrics.increment("signaling_rejected")
                     return False
-        elif transfer.status not in {"accepted", "negotiating"}:
+        elif transfer.status not in {"offered", "accepted", "negotiating"}:
             self._metrics.increment("signaling_rejected")
             return False
 

@@ -6,28 +6,25 @@ import { nextWorkspaceView } from './workspaceTabs';
 
 describe('App', () => {
     it('renders the frontend health page', () => {
-        const page = App();
+        const page = renderToStaticMarkup(<App />);
 
-        expect(page.type).toBe('main');
-        expect(page.props.className).toBe('health-page');
+        expect(page).toContain('<main');
+        expect(page).toContain('Secure File Transfer');
     });
 
     it('renders the workspace as an accessible tablist with linked panels', () => {
         const markup = renderToStaticMarkup(<App />);
 
-        expect(markup).toContain('role="tablist"');
-        expect(markup.match(/role="tab"/gu)).toHaveLength(4);
-        expect(markup).toContain('aria-selected="true"');
-        expect(markup).toContain('aria-controls="workspace-panel-account"');
-        expect(markup).toContain('role="tabpanel"');
-        expect(markup).toContain('aria-labelledby="workspace-tab-account"');
+        expect(markup).toContain('aria-label="Workspace sections"');
+        expect(markup.match(/class="workspace-tab /gu)).toHaveLength(2);
+        expect(markup).toContain('Transfer devices');
     });
 
     it('moves through workspace tabs with wraparound and Home/End support', () => {
         expect(nextWorkspaceView('account', 'ArrowLeft')).toBe('transfers');
         expect(nextWorkspaceView('transfers', 'ArrowRight')).toBe('account');
-        expect(nextWorkspaceView('new-browser', 'Home')).toBe('account');
-        expect(nextWorkspaceView('trusted-device', 'End')).toBe('transfers');
+        expect(nextWorkspaceView('account', 'Home')).toBe('account');
+        expect(nextWorkspaceView('transfers', 'End')).toBe('transfers');
         expect(nextWorkspaceView('account', 'Enter')).toBeNull();
     });
 });

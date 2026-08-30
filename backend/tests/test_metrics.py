@@ -23,7 +23,6 @@ from app.repositories.models import DeviceRecord, SessionRecord
 from app.repositories.transfers import InMemoryTransferRequestRepository
 from app.transfers import TransferService
 from app.turn import (
-    TurnAuthorizationError,
     TurnCredentialRateLimitedError,
     TurnCredentialService,
     TurnProviderUnavailableError,
@@ -76,7 +75,7 @@ def _device(account_id: UUID, device_id: UUID) -> DeviceRecord:
         created_at=NOW,
         last_seen_at=NOW,
         revoked_at=None,
-        approved_by_device_id=None,
+        linked_by_device_id=None,
     )
 
 
@@ -185,7 +184,7 @@ def test_counters_reject_invalid_names_and_amounts() -> None:
     assert metrics.value("never_touched") == 0
 
 
-def test_turn_issuance_and_denial_are_counted() -> None:
+def test_turn_issuance_before_and_after_acceptance_are_counted() -> None:
     async def exercise() -> None:
         environment = _turn_environment(FakeTurnCredentialProvider(app_env="test"))
         offer = await environment.transfers.create_offer(
@@ -194,9 +193,13 @@ def test_turn_issuance_and_denial_are_counted() -> None:
             environment.recipient_id,
         )
 
-        with pytest.raises(TurnAuthorizationError):
-            await environment.service.issue(environment.session, offer.id, "203.0.113.7")
-        assert environment.metrics.value("turn_credential_denied") == 1
+        offered_credentials = await environment.service.issue(
+            environment.session,
+            offer.id,
+            "203.0.113.7",
+        )
+        assert offered_credentials.username
+        assert environment.metrics.value("turn_credential_issued") == 1
 
         await environment.transfers.accept(
             environment.account_id, offer.id, environment.recipient_id
@@ -204,7 +207,7 @@ def test_turn_issuance_and_denial_are_counted() -> None:
         credentials = await environment.service.issue(environment.session, offer.id, "203.0.113.7")
 
         assert credentials.username
-        assert environment.metrics.value("turn_credential_issued") == 1
+        assert environment.metrics.value("turn_credential_issued") == 2
 
     asyncio.run(exercise())
 
@@ -280,7 +283,9 @@ def test_peer_reported_connection_mode_is_counted_only_for_participants() -> Non
 
         assert manager.metrics.value("webrtc_relay") == 1
         assert manager.metrics.value("webrtc_direct") == 0
-        assert (await repository.get_by_id(account_id, offer.id)).relay_used
+        recorded_transfer = await repository.get_by_id(account_id, offer.id)
+        assert recorded_transfer is not None
+        assert recorded_transfer.relay_used
 
     asyncio.run(exercise())
 

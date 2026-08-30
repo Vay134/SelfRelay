@@ -33,7 +33,7 @@ Create the private schema and the application service boundaries before adding p
 
 Work:
 
-- write the initial Supabase migration for users, devices, sessions, challenges, pairing, transfers, socket tickets, security events, and rate limits
+- write the initial Supabase migration for users, devices, sessions, challenges, device-linking OTPs, transfers, socket tickets, security events, and rate limits
 - create a limited FastAPI database role and explicit grants
 - implement repositories with parameterized queries and transaction boundaries
 - define `AuthGateway` and `TurnCredentialProvider` interfaces with test fakes
@@ -67,7 +67,7 @@ Exit criteria:
 - CSRF, CORS, expiry, and revocation negative tests pass
 - production cannot start with the fake Auth adapter
 
-## Phase 3: device identity, login, and recovery
+## Phase 3: device identity and login
 
 Add the browser credential that replaces repeated email login.
 
@@ -78,7 +78,7 @@ Work:
 - implement device proof of possession during first registration
 - implement one-time server challenges for returning-device login
 - add device listing, naming, and revocation
-- implement account epoch rotation and session invalidation for email recovery
+- implement email fallback that leaves other devices unchanged
 - provide clear UI when site data has removed the device key
 
 Exit criteria:
@@ -86,28 +86,26 @@ Exit criteria:
 - reloading preserves the device credential
 - an expired application session can be renewed with a valid device signature
 - altered, expired, replayed, and revoked-device challenges fail
-- recovery invalidates old devices and sessions in one tested workflow
+- email fallback leaves other devices and sessions unchanged in one tested workflow
 
-## Phase 4: trusted-device pairing
+## Phase 4: device linking
 
 Register a new browser without sending another email when a trusted device is available.
 
 Work:
 
-- create pending pairing requests with a comparison code and public-key fingerprint
-- notify online trusted devices
-- build approval and rejection screens on both sides
-- sign a canonical approval statement on the trusted device
-- verify the signature and atomically register the new device
-- limit attempts, enforce expiry, and consume approval once
-- add nuisance-request suppression and security events
+- let an active device create a short-lived device-linking OTP
+- let a new device generate its own key, enter the OTP, and choose an editable default label
+- consume the OTP and atomically register the new device after proof of possession
+- limit attempts, enforce expiry, and consume the OTP once
+- add security events for creation and redemption
 
 Exit criteria:
 
-- a trusted device can approve the exact requested public key
-- a copied code cannot enroll a substituted key
+- an active device can link one new public key with one OTP
+- a copied or replayed OTP cannot enroll a second device
 - cross-account, expired, replayed, and double-consumption cases fail
-- a rejected request never receives a session
+- an invalid OTP never receives a session
 
 ## Phase 5: presence and signaling
 
@@ -179,7 +177,7 @@ Exercise the path used on restrictive networks and tighten the public endpoints.
 Work:
 
 - implement the Cloudflare TURN provider behind the existing interface
-- issue credentials only after an accepted transfer
+- issue credentials only for an authenticated active-device transfer
 - add short TTLs and issuance limits
 - support a relay-only test mode outside production UI
 - tune request, socket, candidate, offer, and concurrency limits
@@ -199,8 +197,8 @@ Finish the user flows and browser security controls.
 
 Work:
 
-- build account, device, pairing, send, receive, progress, and error screens
-- add explicit confirmation before enrollment, recovery, revocation, and download
+- build account, device, device-linking, send, receive, progress, and error screens
+- add explicit confirmation before enrollment, email fallback, device logout, and download
 - add CSP and the remaining browser headers
 - remove inline scripts and unnecessary remote resources
 - test hostile labels, file names, MIME types, and error text
@@ -251,7 +249,7 @@ Work:
 - create a narrowly scoped Pages Function gateway under the frontend deployment boundary that proxies only the required HTTP and WebSocket routes to Cloud Run; keep browser traffic on the Pages origin so the host-only `SameSite=Lax` session cookie remains first-party
 - set the production `VITE_API_ORIGIN` to the Pages origin and reduce the production CSP `connect-src` to `'self'` after the gateway is in place
 - deploy one Uvicorn worker in the pinned image to Google Cloud Run region `asia-southeast1` with request-based billing, zero minimum instances, one maximum instance, and a 60-minute request timeout; keep HTTP/2 end-to-end disabled for WebSocket support and configure a billing budget and alerts ([Cloud Run overview](https://cloud.google.com/run/docs/overview/what-is-cloud-run), [WebSocket guidance](https://cloud.google.com/run/docs/triggering/websockets))
-- keep durable sessions, devices, offers, pairing records, and other authoritative state in Supabase; treat the Cloud Run filesystem as disposable
+- keep durable sessions, devices, offers, device-linking records, and other authoritative state in Supabase; treat the Cloud Run filesystem as disposable
 - create the hosted Supabase project and apply migrations
 - verify an individual sender address in Brevo and create a dedicated SMTP key
 - configure Supabase custom SMTP with Brevo's SMTP relay, port `587`, SMTP login, SMTP key, verified sender address, and sender name `SelfRelay`
